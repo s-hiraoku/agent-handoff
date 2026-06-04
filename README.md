@@ -193,6 +193,20 @@ This repository includes integration assets:
 - `integrations/mcp/agent-handoff-mcp/`: MCP server for tool-based use.
 - `docs/`: user guide suitable for GitHub Pages.
 
+### User Guide
+
+The GitHub Pages user guide is published from the `gh-pages` branch:
+
+```text
+https://s-hiraoku.github.io/agent-handoff/
+```
+
+After editing `docs/`, publish it with:
+
+```sh
+make publish-pages
+```
+
 ### Codex Skill
 
 Copy or symlink the skill into your Codex skills directory:
@@ -265,6 +279,7 @@ make test
 make smoke
 make mcp
 make release-test
+make publish-pages
 ```
 
 Run only the isolated CLI smoke test:

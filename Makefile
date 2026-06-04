@@ -1,4 +1,4 @@
-.PHONY: fmt check test smoke mcp release-test
+.PHONY: fmt check test smoke mcp release-test publish-pages
 
 fmt:
 	cargo fmt --check
@@ -18,3 +18,5 @@ mcp:
 release-test:
 	cargo build --release
 
+publish-pages:
+	./scripts/publish-pages.sh
