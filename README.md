@@ -241,23 +241,42 @@ The MVP intentionally uses a structured Rust CLI and SQLite storage instead of a
 
 ## Development
 
+Run the full local verification suite:
+
 ```sh
-cargo fmt --check
-cargo check
-cargo test
+./scripts/test.sh
 ```
 
-Run an isolated manual smoke test:
+The suite runs:
+
+- `cargo fmt --check`
+- `cargo check`
+- `cargo test`
+- CLI smoke tests for identity, messaging, context, jobs, retry, and blocked adapters
+- MCP server syntax and dependency checks
+- release build
+
+Focused test entry points:
 
 ```sh
-export HANDOFF_HOME=$(mktemp -d)
-cargo run -- init
-cargo run -- join demo lead --runtime shell
-cargo run -- join demo worker --runtime shell
-cargo run -- actas lead
-cargo run -- to worker "hello"
-cargo run -- actas worker
-cargo run -- inbox
+make fmt
+make check
+make test
+make smoke
+make mcp
+make release-test
+```
+
+Run only the isolated CLI smoke test:
+
+```sh
+./scripts/smoke.sh
+```
+
+Run only the MCP checks:
+
+```sh
+./scripts/test-mcp.sh
 ```
 
 ## Release
@@ -270,9 +289,7 @@ v0.1.0
 
 Release checklist:
 
-- `cargo fmt --check`
-- `cargo check`
-- `cargo test`
+- `./scripts/test.sh`
 - README and docs updated
 - tag pushed
 - GitHub release created

@@ -6,12 +6,16 @@ on:
   pull_request:
 
 jobs:
-  rust:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo fmt --check
-      - run: cargo check
-      - run: cargo test
-
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: integrations/mcp/agent-handoff-mcp/package-lock.json
+      - run: npm ci
+        working-directory: integrations/mcp/agent-handoff-mcp
+      - run: ./scripts/test.sh

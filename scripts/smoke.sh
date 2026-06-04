@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+cargo build >/dev/null
+
+tmp="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+export HANDOFF_HOME="$tmp/home"
+bin="$repo_root/target/debug/handoff"
+
+json_get() {
+  python3 -c 'import json,sys; data=json.load(sys.stdin); print(data'"$1"')'
+}
+
+wait_for_state() {
+  local job_id="$1"
+  local want="$2"
+  local state=""
+  for _ in $(seq 1 30); do
+    state="$("$bin" status "$job_id" --json | json_get '["job"]["state"]')"
+    if [[ "$state" == "$want" ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "expected job $job_id to reach $want, got $state" >&2
+  "$bin" status "$job_id" --json >&2 || true
+  "$bin" logs "$job_id" >&2 || true
+  return 1
+}
+
+echo "== init/join/actas =="
+"$bin" init >/dev/null
+"$bin" join demo lead --runtime shell >/dev/null
+"$bin" join demo reviewer --runtime shell >/dev/null
+"$bin" actas lead >/dev/null
+
+echo "== send/inbox/history =="
+"$bin" to reviewer "Please review" --subject "Review request" >/dev/null
+"$bin" post reviewer "Peerpost alias works" >/dev/null
+"$bin" actas reviewer >/dev/null
+inbox_count="$("$bin" inbox --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
+test "$inbox_count" -eq 2
+"$bin" history --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)["messages"]) >= 2'
+
+echo "== context =="
+"$bin" actas lead >/dev/null
+context_id="$("$bin" context create --text "important context" --json | json_get '["context_id"]')"
+"$bin" context show "$context_id" --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["context"]["items"][0]["content"] == "important context"'
+"$bin" to reviewer --context "$context_id" --message "Use this context" >/dev/null
+
+echo "== background job =="
+job_id="$("$bin" run reviewer --task 'printf "done: %s\n" "$HANDOFF_TASK"' --context "$context_id" --json | json_get '["job_id"]')"
+wait_for_state "$job_id" succeeded
+"$bin" logs "$job_id" | grep "done:" >/dev/null
+"$bin" result "$job_id" | grep "done:" >/dev/null
+
+echo "== retry =="
+retry_id="$("$bin" retry "$job_id" --json | json_get '["job_id"]')"
+"$bin" status "$retry_id" --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["job"]["retry_of_job_id"]'
+
+echo "== blocked non-shell runtime =="
+"$bin" join demo codexbot --runtime codex >/dev/null
+blocked_id="$("$bin" run codexbot --task "review this" --as lead --json | json_get '["job_id"]')"
+wait_for_state "$blocked_id" blocked
+
+echo "CLI smoke test passed."
+

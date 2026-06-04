@@ -173,6 +173,26 @@ integrations/mcp/agent-handoff-mcp/
 
 It exposes tools for send, inbox, context creation, run, status, logs, and result.
 
+## Testing
+
+Run the full local suite:
+
+```sh
+./scripts/test.sh
+```
+
+Focused checks:
+
+```sh
+make fmt
+make check
+make smoke
+make mcp
+make release-test
+```
+
+The full suite covers Rust formatting, compile checks, unit tests, CLI smoke tests, MCP checks, and release build.
+
 ## Privacy
 
 MVP behavior:
