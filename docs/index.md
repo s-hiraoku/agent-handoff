@@ -113,7 +113,7 @@ handoff run reviewer --task "echo reviewed"
 With context:
 
 ```sh
-handoff run reviewer --task "echo \"$HANDOFF_CONTEXT\" | wc -l" --context <context-id>
+handoff run reviewer --task 'echo "$HANDOFF_CONTEXT" | wc -l' --context <context-id>
 ```
 
 Track it:
@@ -196,4 +196,3 @@ MVP behavior:
 
 `job_not_finished`
 : The job has not produced a result yet. Check `handoff status <job-id>` and `handoff logs <job-id>`.
-

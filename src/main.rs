@@ -30,7 +30,6 @@ enum Commands {
     Active(ProjectArgs),
     Drop(AgentArg),
     Agents(JsonArgs),
-    #[command(alias = "team")]
     Team(JsonArgs),
     Send(SendArgs),
     To(SendArgs),
@@ -255,6 +254,8 @@ struct RunArgs {
     subject: Option<String>,
     #[arg(long)]
     json: bool,
+    #[arg(skip)]
+    retry_of_job_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1073,8 +1074,8 @@ fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
     let thread_id = message_thread(conn, &task_message_id)?;
     let job_id = id();
     conn.execute(
-        "insert into jobs (id, team_id, thread_id, task_message_id, context_id, requested_by_agent_id, target_agent_id, runtime, state, timeout_seconds, created_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?10)",
+        "insert into jobs (id, team_id, thread_id, task_message_id, context_id, requested_by_agent_id, target_agent_id, runtime, state, retry_of_job_id, timeout_seconds, created_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'queued', ?9, ?10, ?11)",
         params![
             job_id,
             sender.team_id,
@@ -1084,6 +1085,7 @@ fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
             sender.agent_id,
             target.agent_id,
             target.runtime,
+            args.retry_of_job_id,
             args.timeout.map(|value| value as i64),
             now()
         ],
@@ -1221,6 +1223,7 @@ fn cmd_retry(conn: &Connection, args: RetryArgs) -> Result<()> {
         as_agent: task["from"].as_str().map(ToOwned::to_owned),
         subject: task["subject"].as_str().map(ToOwned::to_owned),
         json: args.json,
+        retry_of_job_id: Some(args.job_id),
     };
     cmd_run(conn, run_args)
 }
@@ -2179,6 +2182,7 @@ fn env_key(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use tempfile::TempDir;
 
     fn test_conn() -> (TempDir, Connection) {
@@ -2186,6 +2190,11 @@ mod tests {
         let conn = Connection::open(dir.path().join("handoff.db")).unwrap();
         ensure_schema(&conn).unwrap();
         (dir, conn)
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
     }
 
     #[test]

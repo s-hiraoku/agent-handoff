@@ -95,7 +95,7 @@ handoff context show "$CTX"
 Run a background task:
 
 ```sh
-handoff run reviewer --task "echo reviewed: $HANDOFF_TASK"
+handoff run reviewer --task 'echo reviewed: "$HANDOFF_TASK"'
 handoff status
 handoff logs <job-id>
 handoff result <job-id>
@@ -280,4 +280,3 @@ Release checklist:
 ## License
 
 MIT
-
