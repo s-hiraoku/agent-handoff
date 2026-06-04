@@ -100,6 +100,8 @@ Send context:
 
 ```sh
 handoff to reviewer --context <context-id> --message "Use this context."
+handoff to reviewer --git-diff --message "Review this diff."
+handoff to reviewer --file notes.md --as-context --message "Use these notes."
 ```
 
 ## Run Background Work
@@ -114,6 +116,7 @@ With context:
 
 ```sh
 handoff run reviewer --task 'echo "$HANDOFF_CONTEXT" | wc -l' --context <context-id>
+handoff run reviewer --task 'long-running-command' --timeout 30
 ```
 
 Track it:
@@ -152,6 +155,17 @@ HANDOFF_JOB_ID
 HANDOFF_TASK
 HANDOFF_CONTEXT
 ```
+
+## Delivery Modes
+
+Configure project-local delivery hooks:
+
+```sh
+handoff mode turn --runtime codex
+handoff mode off --runtime codex
+```
+
+`turn` writes a Stop/inbox hook for supported runtimes. `off` removes handoff-owned hook entries and leaves unrelated hooks in place.
 
 ## JSON for Agents
 

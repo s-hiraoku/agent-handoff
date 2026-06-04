@@ -89,6 +89,8 @@ Create and send context:
 handoff actas lead
 CTX=$(handoff context create --git-diff --json | jq -r .context_id)
 handoff to reviewer --context "$CTX" --message "Use this diff as context."
+handoff to reviewer --git-diff --message "Review this diff."
+handoff to reviewer --file notes.md --as-context --message "Use these notes."
 handoff context show "$CTX"
 ```
 
@@ -158,6 +160,7 @@ Jobs:
 
 ```sh
 handoff run <agent> --task <text>
+handoff run <agent> --task <text> --timeout 30
 handoff status [job-id]
 handoff logs <job-id>
 handoff result <job-id>
@@ -172,6 +175,8 @@ handoff mode
 handoff mode turn
 handoff mode off
 ```
+
+`mode turn` writes a project-local inbox hook for supported runtimes. `mode off` removes handoff-owned hook entries.
 
 ## JSON Output
 

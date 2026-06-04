@@ -55,12 +55,24 @@ echo "== context =="
 context_id="$("$bin" context create --text "important context" --json | json_get '["context_id"]')"
 "$bin" context show "$context_id" --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["context"]["items"][0]["content"] == "important context"'
 "$bin" to reviewer --context "$context_id" --message "Use this context" >/dev/null
+note="$tmp/note.md"
+printf 'file context\n' > "$note"
+"$bin" to reviewer --file "$note" --as-context --message "Use this file as context" >/dev/null
+
+echo "== delivery mode hooks =="
+"$bin" mode turn --runtime codex --project "$tmp/project" >/dev/null
+test -f "$tmp/project/.codex/hooks.json"
+grep "handoff" "$tmp/project/.codex/hooks.json" >/dev/null
+"$bin" mode off --runtime codex --project "$tmp/project" >/dev/null
+test ! -f "$tmp/project/.codex/hooks.json"
 
 echo "== background job =="
 job_id="$("$bin" run reviewer --task 'printf "done: %s\n" "$HANDOFF_TASK"' --context "$context_id" --json | json_get '["job_id"]')"
 wait_for_state "$job_id" succeeded
 "$bin" logs "$job_id" | grep "done:" >/dev/null
 "$bin" result "$job_id" | grep "done:" >/dev/null
+quick_timeout_id="$("$bin" run reviewer --task 'printf quick' --timeout 5 --as lead --json | json_get '["job_id"]')"
+wait_for_state "$quick_timeout_id" succeeded
 
 echo "== retry =="
 retry_id="$("$bin" retry "$job_id" --json | json_get '["job_id"]')"
@@ -71,5 +83,8 @@ echo "== blocked non-shell runtime =="
 blocked_id="$("$bin" run codexbot --task "review this" --as lead --json | json_get '["job_id"]')"
 wait_for_state "$blocked_id" blocked
 
-echo "CLI smoke test passed."
+echo "== timeout =="
+timeout_id="$("$bin" run reviewer --task 'sleep 2' --timeout 1 --as lead --json | json_get '["job_id"]')"
+wait_for_state "$timeout_id" timeout
 
+echo "CLI smoke test passed."

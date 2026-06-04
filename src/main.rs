@@ -2,14 +2,16 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 use uuid::Uuid;
+use wait_timeout::ChildExt;
 
 const DEFAULT_LIMIT: i64 = 50;
 
@@ -101,6 +103,12 @@ struct SendArgs {
     stdin: bool,
     #[arg(long)]
     file: Option<PathBuf>,
+    #[arg(long)]
+    as_context: bool,
+    #[arg(long)]
+    git_diff: bool,
+    #[arg(long)]
+    cmd: Option<String>,
     #[arg(long)]
     subject: Option<String>,
     #[arg(long)]
@@ -729,15 +737,12 @@ fn cmd_agents(conn: &Connection, args: JsonArgs) -> Result<()> {
 }
 
 fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()> {
-    let body = read_message_body(
-        &args.message,
-        args.stdin,
-        args.file.as_deref(),
-        args.message_text.as_deref(),
-    )?;
     let sender = resolve_identity(conn, args.as_agent.as_deref(), args.team.as_deref(), None)?;
     let recipient = agent_by_name(conn, &sender.team_id, &args.agent)?;
-    let kind = if args.context.is_some() {
+    let created_context = create_send_context_if_requested(conn, &sender, &args)?;
+    let context_id = args.context.as_deref().or(created_context.as_deref());
+    let body = read_send_body(&args, context_id.is_some())?;
+    let kind = if context_id.is_some() {
         "context"
     } else {
         default_kind
@@ -748,11 +753,21 @@ fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()>
         &recipient.agent_id,
         args.thread.as_deref(),
         kind,
-        args.context.as_deref(),
+        context_id,
         None,
         args.subject.as_deref(),
         &body,
     )?;
+    if let Some(context_id) = context_id {
+        append_event(
+            conn,
+            "context.attached",
+            Some(&sender.team_id),
+            Some(&sender.agent_id),
+            Some(context_id),
+            json!({"message_id": message_id, "context_id": context_id}),
+        )?;
+    }
     if args.json {
         print_json(json!({"ok": true, "message_id": message_id}));
     } else {
@@ -789,10 +804,21 @@ fn cmd_inbox(conn: &Connection, args: InboxArgs) -> Result<()> {
     let unread_only = !args.all;
     let messages = inbox_messages(conn, &identity.agent_id, unread_only, args.limit)?;
     for message in &messages {
-        conn.execute(
+        let message_id = message["id"].as_str().unwrap_or_default();
+        let inserted = conn.execute(
             "insert or ignore into message_reads (message_id, agent_id, read_at) values (?1, ?2, ?3)",
-            params![message["id"].as_str(), identity.agent_id, now()],
+            params![message_id, identity.agent_id, now()],
         )?;
+        if inserted > 0 {
+            append_event(
+                conn,
+                "message.read",
+                Some(&identity.team_id),
+                Some(&identity.agent_id),
+                Some(message_id),
+                json!({"message_id": message_id}),
+            )?;
+        }
     }
     if args.json {
         print_json(json!({"ok": true, "messages": messages}));
@@ -853,6 +879,7 @@ fn cmd_mode(conn: &Connection, args: ModeArgs) -> Result<()> {
     let runtime = args.runtime.unwrap_or_else(detect_runtime);
     if let Some(mode) = args.mode {
         validate_mode(runtime.as_str(), mode.as_str())?;
+        apply_delivery_mode(&project, runtime.as_str(), mode.as_str())?;
         conn.execute(
             "insert into delivery_settings (id, project_path, runtime, mode, updated_at)
              values (?1, ?2, ?3, ?4, ?5)
@@ -1280,7 +1307,7 @@ fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
     };
     set_job_state(conn, job_id, "running", None, None)?;
     append_log(conn, job_id, "adapter", &format!("running: {command}"))?;
-    let child = shell_command(&command)
+    let mut child = shell_command(&command)
         .env("HANDOFF_JOB_ID", job_id)
         .env("HANDOFF_TASK", &task_body)
         .env("HANDOFF_CONTEXT", &context_text)
@@ -1292,9 +1319,49 @@ fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
         "update jobs set process_id=?1 where id=?2",
         params![child.id() as i64, job_id],
     )?;
-    let output = child
-        .wait_with_output()
-        .context("wait for adapter command")?;
+    let output = if let Some(timeout_seconds) = job.timeout_seconds {
+        match child
+            .wait_timeout(Duration::from_secs(timeout_seconds as u64))
+            .context("wait for adapter timeout")?
+        {
+            Some(status) => Output {
+                status,
+                stdout: read_child_pipe(child.stdout.take())?,
+                stderr: read_child_pipe(child.stderr.take())?,
+            },
+            None => {
+                let _ = child.kill();
+                let output = child
+                    .wait_with_output()
+                    .context("wait for timed out adapter command")?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                for line in stdout.lines() {
+                    append_log(conn, job_id, "stdout", line)?;
+                }
+                for line in stderr.lines() {
+                    append_log(conn, job_id, "stderr", line)?;
+                }
+                conn.execute(
+                    "update jobs set state='timeout', finished_at=?1, failure_code='timeout', failure_message=?2, process_id=null where id=?3",
+                    params![now(), format!("Job exceeded timeout of {timeout_seconds}s"), job_id],
+                )?;
+                append_event(
+                    conn,
+                    "job.failed",
+                    Some(&job.team_id),
+                    Some(&job.target_agent_id),
+                    Some(job_id),
+                    json!({"job_id": job_id, "state": "timeout"}),
+                )?;
+                return Ok(());
+            }
+        }
+    } else {
+        child
+            .wait_with_output()
+            .context("wait for adapter command")?
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     for line in stdout.lines() {
@@ -1373,6 +1440,7 @@ struct JobRow {
     target_agent_id: String,
     target_agent_name: String,
     runtime: String,
+    timeout_seconds: Option<i64>,
 }
 
 fn get_or_create_team(conn: &Connection, name: &str) -> Result<String> {
@@ -1874,7 +1942,7 @@ fn context_plaintext(conn: &Connection, context_id: &str) -> Result<String> {
 
 fn job_row(conn: &Connection, job_id: &str) -> Result<Option<JobRow>> {
     conn.query_row(
-        "select j.team_id, t.name, j.thread_id, j.task_message_id, j.context_id, j.requested_by_agent_id, j.target_agent_id, a.name, j.runtime
+        "select j.team_id, t.name, j.thread_id, j.task_message_id, j.context_id, j.requested_by_agent_id, j.target_agent_id, a.name, j.runtime, j.timeout_seconds
          from jobs j join teams t on t.id=j.team_id join agents a on a.id=j.target_agent_id
          where j.id=?1",
         params![job_id],
@@ -1889,6 +1957,7 @@ fn job_row(conn: &Connection, job_id: &str) -> Result<Option<JobRow>> {
                 target_agent_id: row.get(6)?,
                 target_agent_name: row.get(7)?,
                 runtime: row.get(8)?,
+                timeout_seconds: row.get(9)?,
             })
         },
     )
@@ -2050,6 +2119,93 @@ fn spawn_worker(job_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn read_child_pipe<T: Read>(pipe: Option<T>) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut output)?;
+    }
+    Ok(output)
+}
+
+fn create_send_context_if_requested(
+    conn: &Connection,
+    sender: &Identity,
+    args: &SendArgs,
+) -> Result<Option<String>> {
+    let has_context_input = args.git_diff || args.as_context || args.cmd.is_some();
+    if args.context.is_some() && has_context_input {
+        bail!("invalid_arguments: use either --context or context capture flags, not both");
+    }
+    if args.as_context && args.file.is_none() {
+        bail!("invalid_arguments: --as-context requires --file");
+    }
+    if !has_context_input {
+        return Ok(None);
+    }
+    let context_id = create_context(conn, sender, args.subject.as_deref())?;
+    add_context_inputs(
+        conn,
+        &context_id,
+        None,
+        false,
+        if args.as_context {
+            args.file.as_deref()
+        } else {
+            None
+        },
+        &[],
+        args.git_diff,
+        args.cmd.as_deref(),
+    )?;
+    append_event(
+        conn,
+        "context.created",
+        Some(&sender.team_id),
+        Some(&sender.agent_id),
+        Some(&context_id),
+        json!({"context_id": context_id, "source": "send"}),
+    )?;
+    Ok(Some(context_id))
+}
+
+fn read_send_body(args: &SendArgs, has_context: bool) -> Result<String> {
+    if has_context {
+        let file_body = if args.as_context {
+            None
+        } else {
+            args.file.as_deref()
+        };
+        let mut sources = 0;
+        if !args.message.is_empty() {
+            sources += 1;
+        }
+        if args.stdin {
+            sources += 1;
+        }
+        if file_body.is_some() {
+            sources += 1;
+        }
+        if args.message_text.is_some() {
+            sources += 1;
+        }
+        if sources == 0 {
+            return Ok("Context handoff".to_string());
+        }
+        return read_message_body(
+            &args.message,
+            args.stdin,
+            file_body,
+            args.message_text.as_deref(),
+        );
+    }
+    read_message_body(
+        &args.message,
+        args.stdin,
+        args.file.as_deref(),
+        args.message_text.as_deref(),
+    )
+}
+
 fn read_message_body(
     message: &[String],
     read_stdin: bool,
@@ -2118,6 +2274,164 @@ fn validate_mode(runtime: &str, mode: &str) -> Result<()> {
     } else {
         bail!("unsupported_delivery_mode: {runtime} does not support {mode}")
     }
+}
+
+fn apply_delivery_mode(project: &str, runtime: &str, mode: &str) -> Result<()> {
+    match runtime {
+        "claude-code" => {
+            let path = Path::new(project).join(".claude/settings.local.json");
+            apply_json_stop_hook(&path, mode)
+        }
+        "codex" => {
+            let path = Path::new(project).join(".codex/hooks.json");
+            apply_json_stop_hook(&path, mode)
+        }
+        "copilot" => {
+            let path = Path::new(project).join(".github/hooks/handoff.json");
+            apply_json_stop_hook(&path, mode)
+        }
+        "gemini" | "antigravity" | "opencode" => {
+            let path = Path::new(project).join(".agent/rules/handoff.md");
+            apply_markdown_turn_rule(&path, mode)
+        }
+        "shell" | "unknown" => Ok(()),
+        _ => bail!("unsupported_runtime: {runtime}"),
+    }
+}
+
+fn apply_json_stop_hook(path: &Path, mode: &str) -> Result<()> {
+    let mut value = read_json_file(path)?;
+    remove_handoff_hooks(&mut value);
+    if mode != "off" {
+        let command = delivery_hook_command()?;
+        add_stop_hook(&mut value, &command);
+    }
+    if value_has_no_hooks(&value) {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&value)? + "\n")?;
+    Ok(())
+}
+
+fn apply_markdown_turn_rule(path: &Path, mode: &str) -> Result<()> {
+    if mode == "off" {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let command = delivery_hook_command()?;
+    fs::write(
+        path,
+        format!(
+            "# handoff Integration Rule\n\nAfter each agent turn, check the handoff inbox.\n\n```sh\n{command}\n```\n"
+        ),
+    )?;
+    Ok(())
+}
+
+fn read_json_file(path: &Path) -> Result<Value> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let content = fs::read_to_string(path)?;
+    if content.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(&content).with_context(|| format!("parse {}", path.display()))
+}
+
+fn remove_handoff_hooks(value: &mut Value) {
+    let Some(hooks) = value.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let keys = hooks.keys().cloned().collect::<Vec<_>>();
+    for key in keys {
+        let Some(entries) = hooks.get_mut(&key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        entries.retain(|entry| !json_contains_handoff_command(entry));
+    }
+    hooks.retain(|_, entry| entry.as_array().is_none_or(|items| !items.is_empty()));
+}
+
+fn add_stop_hook(value: &mut Value, command: &str) {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    let object = value.as_object_mut().expect("object initialized");
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !hooks.is_object() {
+        *hooks = Value::Object(Map::new());
+    }
+    let stop = hooks
+        .as_object_mut()
+        .expect("hooks object initialized")
+        .entry("Stop")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !stop.is_array() {
+        *stop = Value::Array(Vec::new());
+    }
+    stop.as_array_mut()
+        .expect("stop array initialized")
+        .push(json!({
+            "matcher": "",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command
+                }
+            ]
+        }));
+}
+
+fn value_has_no_hooks(value: &Value) -> bool {
+    value
+        .get("hooks")
+        .and_then(Value::as_object)
+        .is_none_or(|hooks| {
+            hooks
+                .values()
+                .all(|entry| entry.as_array().is_none_or(Vec::is_empty))
+        })
+}
+
+fn json_contains_handoff_command(value: &Value) -> bool {
+    match value {
+        Value::String(text) => is_handoff_hook_command(text),
+        Value::Array(items) => items.iter().any(json_contains_handoff_command),
+        Value::Object(map) => map.values().any(json_contains_handoff_command),
+        _ => false,
+    }
+}
+
+fn is_handoff_hook_command(text: &str) -> bool {
+    text.contains("handoff")
+        && text.contains("inbox")
+        && (text.contains("--json") || text.contains("agent-handoff"))
+}
+
+fn delivery_hook_command() -> Result<String> {
+    let exe = env::current_exe()?;
+    Ok(format!(
+        "'{}' inbox --json",
+        shell_quote(&exe.display().to_string())
+    ))
+}
+
+fn shell_quote(value: &str) -> String {
+    value.replace('\'', "'\\''")
 }
 
 fn detect_runtime() -> Runtime {
@@ -2240,6 +2554,9 @@ mod tests {
                 team: None,
                 stdin: false,
                 file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
                 subject: None,
                 thread: None,
                 context: None,
@@ -2277,5 +2594,144 @@ mod tests {
         let context = context_json(&conn, &context_id).unwrap();
         assert_eq!(context["items"][0]["kind"], "file");
         assert!(context["items"][0]["content_hash"].as_str().unwrap().len() > 20);
+    }
+
+    #[test]
+    fn send_file_as_context_creates_context_message() {
+        let (_dir, conn) = test_conn();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmp.path(), "handoff context").unwrap();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "alice".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "bob".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_send(
+            &conn,
+            SendArgs {
+                agent: "bob".into(),
+                message: vec![],
+                as_agent: Some("alice".into()),
+                team: None,
+                stdin: false,
+                file: Some(tmp.path().to_path_buf()),
+                as_context: true,
+                git_diff: false,
+                cmd: None,
+                subject: Some("ctx".into()),
+                thread: None,
+                context: None,
+                message_text: Some("use this".into()),
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        let bob = agent_by_name(&conn, &get_or_create_team(&conn, "team").unwrap(), "bob").unwrap();
+        let inbox = inbox_messages(&conn, &bob.agent_id, true, 10).unwrap();
+        assert_eq!(inbox[0]["kind"], "context");
+        let context_id = inbox[0]["context_id"].as_str().unwrap();
+        let context = context_json(&conn, context_id).unwrap();
+        assert_eq!(context["items"][0]["content"], "handoff context");
+        assert_eq!(inbox[0]["body"], "use this");
+    }
+
+    #[test]
+    fn send_as_context_requires_file() {
+        let (_dir, conn) = test_conn();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "alice".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "bob".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        let err = cmd_send(
+            &conn,
+            SendArgs {
+                agent: "bob".into(),
+                message: vec![],
+                as_agent: Some("alice".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: true,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--as-context requires --file"));
+    }
+
+    #[test]
+    fn mode_turn_writes_codex_hook_and_off_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_path_buf();
+        let (_db_dir, conn) = test_conn();
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Turn),
+                runtime: Some(Runtime::Codex),
+                project: Some(project.clone()),
+                json: false,
+            },
+        )
+        .unwrap();
+        let hook_path = project.join(".codex/hooks.json");
+        let content = fs::read_to_string(&hook_path).unwrap();
+        assert!(content.contains("handoff"));
+        assert!(content.contains("inbox"));
+
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Off),
+                runtime: Some(Runtime::Codex),
+                project: Some(project),
+                json: false,
+            },
+        )
+        .unwrap();
+        assert!(!hook_path.exists());
     }
 }

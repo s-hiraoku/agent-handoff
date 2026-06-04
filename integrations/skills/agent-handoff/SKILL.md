@@ -52,12 +52,15 @@ Send context:
 
 ```sh
 handoff to <agent> --context <context-id> --message "Use this context."
+handoff to <agent> --git-diff --message "Review this diff."
+handoff to <agent> --file <path> --as-context --message "Use this file as context."
 ```
 
 Run background work:
 
 ```sh
 handoff run <agent> --task "task text" --context <context-id>
+handoff run <agent> --task "task text" --timeout 30
 handoff status <job-id>
 handoff logs <job-id>
 handoff result <job-id>
@@ -80,4 +83,3 @@ handoff history
 handoff context list
 handoff status
 ```
-
