@@ -108,7 +108,7 @@ struct SendArgs {
     thread: Option<String>,
     #[arg(long)]
     context: Option<String>,
-    #[arg(long)]
+    #[arg(long = "message")]
     message_text: Option<String>,
     #[arg(long)]
     json: bool,
