@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
@@ -14,6 +14,7 @@ use uuid::Uuid;
 use wait_timeout::ChildExt;
 
 const DEFAULT_LIMIT: i64 = 50;
+const ROLE_LOCK_TTL_SECONDS: i64 = 12 * 60 * 60;
 
 #[derive(Parser, Debug)]
 #[command(name = "handoff")]
@@ -41,6 +42,7 @@ enum Commands {
     History(HistoryArgs),
     Show(ShowArgs),
     Mode(ModeArgs),
+    Monitor(MonitorArgs),
     Leave(LeaveArgs),
     Reset(ProjectArgs),
     RenameTeam(RenameTeamArgs),
@@ -179,6 +181,26 @@ struct ModeArgs {
     project: Option<PathBuf>,
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args, Debug)]
+struct MonitorArgs {
+    #[arg(long = "as")]
+    as_agent: Option<String>,
+    #[arg(long)]
+    project: Option<PathBuf>,
+    #[arg(long, value_enum)]
+    runtime: Option<Runtime>,
+    #[arg(long)]
+    session_id: Option<String>,
+    #[arg(long, default_value_t = 5)]
+    interval: u64,
+    #[arg(long)]
+    once: bool,
+    #[arg(long)]
+    json: bool,
+    #[arg(long, hide = true)]
+    instruction: bool,
 }
 
 #[derive(Args, Debug)]
@@ -401,6 +423,7 @@ fn run() -> Result<()> {
         Commands::History(args) => cmd_history(&conn, args),
         Commands::Show(args) => cmd_show(&conn, args),
         Commands::Mode(args) => cmd_mode(&conn, args),
+        Commands::Monitor(args) => cmd_monitor(&conn, args),
         Commands::Leave(args) => cmd_leave(&conn, args),
         Commands::Reset(args) => cmd_reset(&conn, args),
         Commands::RenameTeam(args) => cmd_rename_team(&conn, args),
@@ -639,35 +662,27 @@ fn cmd_actas(conn: &Connection, args: AgentArg) -> Result<()> {
         .into_iter()
         .find(|item| item.agent == args.agent)
         .ok_or_else(|| anyhow!("unknown agent identity for this project: {}", args.agent))?;
-    let now = now();
-    conn.execute(
-        "insert into role_locks (id, team_id, agent_id, project_path, runtime, session_id, process_id, claimed_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-         on conflict(team_id, agent_id, project_path, runtime)
-         do update set session_id=excluded.session_id, process_id=excluded.process_id, claimed_at=excluded.claimed_at",
-        params![
-            id(),
-            identity.team_id,
-            identity.agent_id,
-            project,
-            identity.runtime,
-            env::var("HANDOFF_SESSION_ID").ok(),
-            std::process::id() as i64,
-            now
-        ],
-    )?;
+    let session_id = stable_session_id();
+    claim_role_lock(conn, &identity, &project, session_id.as_deref())?;
     append_event(
         conn,
         "agent.role_claimed",
         Some(&identity.team_id),
         Some(&identity.agent_id),
         Some(&project),
-        json!({"project": project, "agent": identity.agent}),
+        json!({"project": project, "agent": identity.agent, "session_id": session_id}),
     )?;
     if args.json {
-        print_json(json!({"ok": true, "active": identity.agent}));
+        print_json(
+            json!({"ok": true, "active": identity.agent, "exclusive": session_id.is_some()}),
+        );
     } else {
         println!("Active role: {}", identity.agent);
+        if session_id.is_none() {
+            println!(
+                "No stable session id detected; role selection is project-local and lease-based."
+            );
+        }
     }
     Ok(())
 }
@@ -805,20 +820,7 @@ fn cmd_inbox(conn: &Connection, args: InboxArgs) -> Result<()> {
     let messages = inbox_messages(conn, &identity.agent_id, unread_only, args.limit)?;
     for message in &messages {
         let message_id = message["id"].as_str().unwrap_or_default();
-        let inserted = conn.execute(
-            "insert or ignore into message_reads (message_id, agent_id, read_at) values (?1, ?2, ?3)",
-            params![message_id, identity.agent_id, now()],
-        )?;
-        if inserted > 0 {
-            append_event(
-                conn,
-                "message.read",
-                Some(&identity.team_id),
-                Some(&identity.agent_id),
-                Some(message_id),
-                json!({"message_id": message_id}),
-            )?;
-        }
+        mark_message_read(conn, &identity, message_id)?;
     }
     if args.json {
         print_json(json!({"ok": true, "messages": messages}));
@@ -914,6 +916,57 @@ fn cmd_mode(conn: &Connection, args: ModeArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn cmd_monitor(conn: &Connection, args: MonitorArgs) -> Result<()> {
+    let project = project_path(args.project.clone())?;
+    let runtime = args.runtime.unwrap_or_else(detect_runtime);
+    if args.instruction {
+        let session_id = args
+            .session_id
+            .or_else(|| session_id_from_hook_stdin().ok().flatten())
+            .or_else(stable_session_id)
+            .unwrap_or_else(|| format!("unknown-{}", std::process::id()));
+        print_monitor_instruction(&project, runtime.as_str(), &session_id)?;
+        return Ok(());
+    }
+
+    cleanup_stale_role_locks(conn)?;
+    let session_id = args.session_id.or_else(stable_session_id);
+    if let Some(session_id) = session_id.as_deref() {
+        claim_monitor_pid(session_id)?;
+    }
+
+    let interval = args.interval.max(1);
+    loop {
+        let identities = monitor_identities(
+            conn,
+            &project,
+            runtime.as_str(),
+            args.as_agent.as_deref(),
+            session_id.as_deref(),
+        )?;
+        if let (Some(agent), Some(session_id)) = (args.as_agent.as_deref(), session_id.as_deref()) {
+            let identity = identities
+                .iter()
+                .find(|item| item.agent == agent)
+                .ok_or_else(|| anyhow!("unknown agent identity for monitor: {agent}"))?;
+            claim_role_lock(conn, identity, &project, Some(session_id))?;
+        }
+        let delivered = deliver_monitor_messages(conn, &identities, args.json)?;
+        if args.once {
+            if args.json && delivered == 0 {
+                print_json(json!({"ok": true, "messages": []}));
+            }
+            return Ok(());
+        }
+        if let (Some(agent), Some(session_id)) = (args.as_agent.as_deref(), session_id.as_deref()) {
+            if let Some(identity) = identities.iter().find(|item| item.agent == agent) {
+                refresh_role_lock(conn, identity, &project, session_id)?;
+            }
+        }
+        std::thread::sleep(Duration::from_secs(interval));
+    }
 }
 
 fn cmd_leave(conn: &Connection, args: LeaveArgs) -> Result<()> {
@@ -1528,15 +1581,17 @@ fn identities_for_project(conn: &Connection, project: &str) -> Result<Vec<Identi
 }
 
 fn active_identity(conn: &Connection, project: &str) -> Result<Option<Identity>> {
+    cleanup_stale_role_locks(conn)?;
     conn.query_row(
         "select t.id, t.name, a.id, a.name, rl.runtime
          from role_locks rl
          join teams t on t.id=rl.team_id
          join agents a on a.id=rl.agent_id
          where rl.project_path=?1
+           and (rl.expires_at is null or rl.expires_at > ?2)
          order by rl.claimed_at desc
          limit 1",
-        params![project],
+        params![project, now()],
         |row| {
             Ok(Identity {
                 team_id: row.get(0)?,
@@ -1549,6 +1604,122 @@ fn active_identity(conn: &Connection, project: &str) -> Result<Option<Identity>>
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn claim_role_lock(
+    conn: &Connection,
+    identity: &Identity,
+    project: &str,
+    session_id: Option<&str>,
+) -> Result<()> {
+    cleanup_stale_role_locks(conn)?;
+    let existing: Option<(Option<String>, Option<String>)> = conn
+        .query_row(
+            "select session_id, expires_at from role_locks
+             where team_id=?1 and agent_id=?2 and project_path=?3 and runtime=?4",
+            params![
+                identity.team_id,
+                identity.agent_id,
+                project,
+                identity.runtime
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((owner_session, expires_at)) = existing {
+        let owner_is_other = match (owner_session.as_deref(), session_id) {
+            (Some(owner), Some(current)) => owner != current,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if owner_is_other
+            && expires_at
+                .as_deref()
+                .is_none_or(|expires| expires > now().as_str())
+        {
+            bail!(
+                "role_locked: {} is held by another live session",
+                identity.agent
+            );
+        }
+    }
+    let claimed_at = now();
+    let expires_at = now_plus_seconds(ROLE_LOCK_TTL_SECONDS);
+    conn.execute(
+        "insert into role_locks (id, team_id, agent_id, project_path, runtime, session_id, process_id, claimed_at, expires_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         on conflict(team_id, agent_id, project_path, runtime)
+         do update set session_id=excluded.session_id, process_id=excluded.process_id, claimed_at=excluded.claimed_at, expires_at=excluded.expires_at",
+        params![
+            id(),
+            identity.team_id,
+            identity.agent_id,
+            project,
+            identity.runtime,
+            session_id,
+            std::process::id() as i64,
+            claimed_at,
+            expires_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn refresh_role_lock(
+    conn: &Connection,
+    identity: &Identity,
+    project: &str,
+    session_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "update role_locks set expires_at=?1, process_id=?2 where team_id=?3 and agent_id=?4 and project_path=?5 and runtime=?6 and session_id=?7",
+        params![
+            now_plus_seconds(ROLE_LOCK_TTL_SECONDS),
+            std::process::id() as i64,
+            identity.team_id,
+            identity.agent_id,
+            project,
+            identity.runtime,
+            session_id
+        ],
+    )?;
+    Ok(())
+}
+
+fn role_lock_held_by_other(
+    conn: &Connection,
+    identity: &Identity,
+    project: &str,
+    session_id: Option<&str>,
+) -> Result<bool> {
+    cleanup_stale_role_locks(conn)?;
+    let owner: Option<Option<String>> = conn
+        .query_row(
+            "select session_id from role_locks
+             where team_id=?1 and agent_id=?2 and project_path=?3 and runtime=?4
+               and (expires_at is null or expires_at > ?5)",
+            params![
+                identity.team_id,
+                identity.agent_id,
+                project,
+                identity.runtime,
+                now()
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(match owner.flatten() {
+        Some(owner) => session_id.is_none_or(|current| current != owner),
+        None => false,
+    })
+}
+
+fn cleanup_stale_role_locks(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "delete from role_locks where expires_at is not null and expires_at <= ?1",
+        params![now()],
+    )?;
+    Ok(())
 }
 
 fn resolve_identity(
@@ -1691,6 +1862,83 @@ fn inbox_messages(
             message_json(conn, &message_id)?.ok_or_else(|| anyhow!("missing message"))
         })
         .collect()
+}
+
+fn mark_message_read(conn: &Connection, identity: &Identity, message_id: &str) -> Result<()> {
+    let inserted = conn.execute(
+        "insert or ignore into message_reads (message_id, agent_id, read_at) values (?1, ?2, ?3)",
+        params![message_id, identity.agent_id, now()],
+    )?;
+    if inserted > 0 {
+        append_event(
+            conn,
+            "message.read",
+            Some(&identity.team_id),
+            Some(&identity.agent_id),
+            Some(message_id),
+            json!({"message_id": message_id}),
+        )?;
+    }
+    Ok(())
+}
+
+fn monitor_identities(
+    conn: &Connection,
+    project: &str,
+    runtime: &str,
+    as_agent: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<Vec<Identity>> {
+    let mut identities = identities_for_project(conn, project)?;
+    identities.retain(|item| item.runtime == runtime);
+    if let Some(as_agent) = as_agent {
+        identities.retain(|item| item.agent == as_agent);
+    } else if let Some(active) = active_identity(conn, project)? {
+        if active.runtime == runtime {
+            identities.retain(|item| item.agent_id == active.agent_id);
+        }
+    }
+    let mut available = Vec::new();
+    for identity in identities {
+        if !role_lock_held_by_other(conn, &identity, project, session_id)? {
+            available.push(identity);
+        }
+    }
+    Ok(available)
+}
+
+fn deliver_monitor_messages(
+    conn: &Connection,
+    identities: &[Identity],
+    json_output: bool,
+) -> Result<usize> {
+    let mut delivered = 0;
+    for identity in identities {
+        let messages = inbox_messages(conn, &identity.agent_id, true, DEFAULT_LIMIT)?;
+        for message in messages {
+            let message_id = message["id"].as_str().unwrap_or_default();
+            if json_output {
+                println!("{}", serde_json::to_string(&message)?);
+            } else {
+                println!(
+                    "{} | {} | {} -> {} | {}",
+                    message["created_at"].as_str().unwrap_or_default(),
+                    message["team"].as_str().unwrap_or_default(),
+                    message["from"].as_str().unwrap_or_default(),
+                    message["to"].as_str().unwrap_or_default(),
+                    escape_monitor_body(message["body"].as_str().unwrap_or_default())
+                );
+            }
+            io::stdout().flush()?;
+            mark_message_read(conn, identity, message_id)?;
+            delivered += 1;
+        }
+    }
+    Ok(delivered)
+}
+
+fn escape_monitor_body(body: &str) -> String {
+    body.replace('\r', "").replace('\n', "\\n")
 }
 
 fn history_messages(
@@ -2280,15 +2528,15 @@ fn apply_delivery_mode(project: &str, runtime: &str, mode: &str) -> Result<()> {
     match runtime {
         "claude-code" => {
             let path = Path::new(project).join(".claude/settings.local.json");
-            apply_json_stop_hook(&path, mode)
+            apply_claude_code_hooks(&path, project, runtime, mode)
         }
         "codex" => {
             let path = Path::new(project).join(".codex/hooks.json");
-            apply_json_stop_hook(&path, mode)
+            apply_json_turn_hook(&path, mode)
         }
         "copilot" => {
             let path = Path::new(project).join(".github/hooks/handoff.json");
-            apply_json_stop_hook(&path, mode)
+            apply_json_turn_hook(&path, mode)
         }
         "gemini" | "antigravity" | "opencode" => {
             let path = Path::new(project).join(".agent/rules/handoff.md");
@@ -2299,14 +2547,34 @@ fn apply_delivery_mode(project: &str, runtime: &str, mode: &str) -> Result<()> {
     }
 }
 
-fn apply_json_stop_hook(path: &Path, mode: &str) -> Result<()> {
+fn apply_claude_code_hooks(path: &Path, project: &str, runtime: &str, mode: &str) -> Result<()> {
+    let mut value = read_json_file(path)?;
+    remove_handoff_hooks(&mut value);
+    if matches!(mode, "turn" | "both") {
+        let command = inbox_hook_command()?;
+        add_json_hook(&mut value, "Stop", &command);
+    }
+    if matches!(mode, "monitor" | "both") {
+        let command = monitor_instruction_hook_command(project, runtime)?;
+        add_json_hook(&mut value, "SessionStart", &command);
+    }
+    write_json_hooks(path, &value)
+}
+
+fn apply_json_turn_hook(path: &Path, mode: &str) -> Result<()> {
     let mut value = read_json_file(path)?;
     remove_handoff_hooks(&mut value);
     if mode != "off" {
-        let command = delivery_hook_command()?;
-        add_stop_hook(&mut value, &command);
+        let command = inbox_hook_command()?;
+        add_json_hook(&mut value, "Stop", &command);
     }
-    if value_has_no_hooks(&value) {
+    write_json_hooks(path, &value)
+}
+
+fn write_json_hooks(path: &Path, value: &Value) -> Result<()> {
+    let mut output = value.clone();
+    remove_empty_hooks_object(&mut output);
+    if value_has_no_content(&output) {
         if path.exists() {
             fs::remove_file(path)?;
         }
@@ -2315,7 +2583,7 @@ fn apply_json_stop_hook(path: &Path, mode: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_string_pretty(&value)? + "\n")?;
+    fs::write(path, serde_json::to_string_pretty(&output)? + "\n")?;
     Ok(())
 }
 
@@ -2329,7 +2597,7 @@ fn apply_markdown_turn_rule(path: &Path, mode: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let command = delivery_hook_command()?;
+    let command = inbox_hook_command()?;
     fs::write(
         path,
         format!(
@@ -2364,7 +2632,7 @@ fn remove_handoff_hooks(value: &mut Value) {
     hooks.retain(|_, entry| entry.as_array().is_none_or(|items| !items.is_empty()));
 }
 
-fn add_stop_hook(value: &mut Value, command: &str) {
+fn add_json_hook(value: &mut Value, event: &str, command: &str) {
     if !value.is_object() {
         *value = json!({});
     }
@@ -2375,16 +2643,17 @@ fn add_stop_hook(value: &mut Value, command: &str) {
     if !hooks.is_object() {
         *hooks = Value::Object(Map::new());
     }
-    let stop = hooks
+    let entries = hooks
         .as_object_mut()
         .expect("hooks object initialized")
-        .entry("Stop")
+        .entry(event)
         .or_insert_with(|| Value::Array(Vec::new()));
-    if !stop.is_array() {
-        *stop = Value::Array(Vec::new());
+    if !entries.is_array() {
+        *entries = Value::Array(Vec::new());
     }
-    stop.as_array_mut()
-        .expect("stop array initialized")
+    entries
+        .as_array_mut()
+        .expect("hook entries array initialized")
         .push(json!({
             "matcher": "",
             "hooks": [
@@ -2407,6 +2676,19 @@ fn value_has_no_hooks(value: &Value) -> bool {
         })
 }
 
+fn remove_empty_hooks_object(value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if value_has_no_hooks(&json!({"hooks": object.get("hooks").cloned().unwrap_or(Value::Null)})) {
+        object.remove("hooks");
+    }
+}
+
+fn value_has_no_content(value: &Value) -> bool {
+    value.as_object().is_none_or(Map::is_empty)
+}
+
 fn json_contains_handoff_command(value: &Value) -> bool {
     match value {
         Value::String(text) => is_handoff_hook_command(text),
@@ -2418,16 +2700,131 @@ fn json_contains_handoff_command(value: &Value) -> bool {
 
 fn is_handoff_hook_command(text: &str) -> bool {
     text.contains("handoff")
-        && text.contains("inbox")
-        && (text.contains("--json") || text.contains("agent-handoff"))
+        && (text.contains("inbox") || text.contains("monitor"))
+        && (text.contains("--json")
+            || text.contains("--instruction")
+            || text.contains("agent-handoff"))
 }
 
-fn delivery_hook_command() -> Result<String> {
+fn inbox_hook_command() -> Result<String> {
     let exe = env::current_exe()?;
     Ok(format!(
         "'{}' inbox --json",
         shell_quote(&exe.display().to_string())
     ))
+}
+
+fn monitor_instruction_hook_command(project: &str, runtime: &str) -> Result<String> {
+    let exe = env::current_exe()?;
+    Ok(format!(
+        "'{}' monitor --instruction --runtime {} --project '{}'",
+        shell_quote(&exe.display().to_string()),
+        runtime,
+        shell_quote(project)
+    ))
+}
+
+fn print_monitor_instruction(project: &str, runtime: &str, session_id: &str) -> Result<()> {
+    let exe = env::current_exe()?;
+    let command = format!(
+        "'{}' monitor --runtime {} --project '{}' --session-id '{}'",
+        shell_quote(&exe.display().to_string()),
+        runtime,
+        shell_quote(project),
+        shell_quote(session_id)
+    );
+    println!(
+        "handoff monitor mode: invoke the Monitor tool now with this persistent command:\n\n  command: {command}\n  description: handoff inbox stream\n  persistent: true\n\nThis streams incoming handoff messages into the session in near real time."
+    );
+    Ok(())
+}
+
+fn session_id_from_hook_stdin() -> Result<Option<String>> {
+    let input = read_all_stdin()?;
+    if input.trim().is_empty() {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+    Ok(value
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned))
+}
+
+fn stable_session_id() -> Option<String> {
+    [
+        "HANDOFF_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_SESSION_ID",
+    ]
+    .iter()
+    .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
+}
+
+fn claim_monitor_pid(session_id: &str) -> Result<()> {
+    cleanup_stale_monitor_pidfiles()?;
+    let path = monitor_pid_path(session_id)?;
+    if let Ok(content) = fs::read_to_string(&path) {
+        if let Ok(pid) = content.trim().parse::<u32>() {
+            if pid != std::process::id() && pid_alive(pid) {
+                terminate_pid(pid)?;
+            }
+        }
+    }
+    fs::write(path, std::process::id().to_string())?;
+    Ok(())
+}
+
+fn cleanup_stale_monitor_pidfiles() -> Result<()> {
+    let run = run_dir()?;
+    if !run.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(run)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("monitor.") || !name.ends_with(".pid") {
+            continue;
+        }
+        let pid = fs::read_to_string(&path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok());
+        if pid.is_none_or(|pid| !pid_alive(pid)) {
+            let _ = fs::remove_file(path);
+        }
+    }
+    Ok(())
+}
+
+fn monitor_pid_path(session_id: &str) -> Result<PathBuf> {
+    let key = content_hash(session_id);
+    Ok(run_dir()?.join(format!("monitor.{key}.pid")))
+}
+
+fn run_dir() -> Result<PathBuf> {
+    let path = app_home()?.join("run");
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+fn pid_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn terminate_pid(pid: u32) -> Result<()> {
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+    Ok(())
 }
 
 fn shell_quote(value: &str) -> String {
@@ -2453,6 +2850,10 @@ fn id() -> String {
 
 fn now() -> String {
     Utc::now().to_rfc3339()
+}
+
+fn now_plus_seconds(seconds: i64) -> String {
+    (Utc::now() + ChronoDuration::seconds(seconds)).to_rfc3339()
 }
 
 fn content_hash(content: &str) -> String {
@@ -2703,6 +3104,90 @@ mod tests {
     }
 
     #[test]
+    fn actas_role_lock_rejects_other_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_path_buf();
+        let (_db_dir, conn) = test_conn();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "alice".into(),
+                runtime: Some(Runtime::Shell),
+                project: Some(project.clone()),
+                json: false,
+            },
+        )
+        .unwrap();
+        let project = project_path(Some(project)).unwrap();
+        let identity = identities_for_project(&conn, &project).unwrap().remove(0);
+        claim_role_lock(&conn, &identity, &project, Some("session-a")).unwrap();
+        let err = claim_role_lock(&conn, &identity, &project, Some("session-b")).unwrap_err();
+        assert!(err.to_string().contains("role_locked"));
+        refresh_role_lock(&conn, &identity, &project, "session-a").unwrap();
+    }
+
+    #[test]
+    fn monitor_delivery_marks_messages_read() {
+        let (_dir, conn) = test_conn();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "alice".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "bob".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_send(
+            &conn,
+            SendArgs {
+                agent: "bob".into(),
+                message: vec!["stream me".into()],
+                as_agent: Some("alice".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        let project = project_path(None).unwrap();
+        let identities = monitor_identities(&conn, &project, "shell", Some("bob"), None).unwrap();
+        assert_eq!(
+            deliver_monitor_messages(&conn, &identities, false).unwrap(),
+            1
+        );
+        let bob = agent_by_name(&conn, &get_or_create_team(&conn, "team").unwrap(), "bob").unwrap();
+        assert!(
+            inbox_messages(&conn, &bob.agent_id, true, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn mode_turn_writes_codex_hook_and_off_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_path_buf();
@@ -2733,5 +3218,74 @@ mod tests {
         )
         .unwrap();
         assert!(!hook_path.exists());
+    }
+
+    #[test]
+    fn mode_monitor_writes_claude_session_start_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_path_buf();
+        let (_db_dir, conn) = test_conn();
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Monitor),
+                runtime: Some(Runtime::ClaudeCode),
+                project: Some(project.clone()),
+                json: false,
+            },
+        )
+        .unwrap();
+        let hook_path = project.join(".claude/settings.local.json");
+        let content = fs::read_to_string(&hook_path).unwrap();
+        assert!(content.contains("SessionStart"));
+        assert!(content.contains("monitor --instruction"));
+        assert!(!content.contains("\"Stop\""));
+
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Both),
+                runtime: Some(Runtime::ClaudeCode),
+                project: Some(project.clone()),
+                json: false,
+            },
+        )
+        .unwrap();
+        let content = fs::read_to_string(&hook_path).unwrap();
+        assert!(content.contains("SessionStart"));
+        assert!(content.contains("\"Stop\""));
+    }
+
+    #[test]
+    fn mode_off_preserves_unrelated_json_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_path_buf();
+        let hook_path = project.join(".codex/hooks.json");
+        fs::create_dir_all(hook_path.parent().unwrap()).unwrap();
+        fs::write(&hook_path, r#"{"theme":"dark"}"#).unwrap();
+        let (_db_dir, conn) = test_conn();
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Turn),
+                runtime: Some(Runtime::Codex),
+                project: Some(project.clone()),
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Off),
+                runtime: Some(Runtime::Codex),
+                project: Some(project),
+                json: false,
+            },
+        )
+        .unwrap();
+        let content = fs::read_to_string(&hook_path).unwrap();
+        assert!(content.contains("theme"));
+        assert!(!content.contains("handoff"));
     }
 }

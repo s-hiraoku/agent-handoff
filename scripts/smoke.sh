@@ -40,6 +40,13 @@ echo "== init/join/actas =="
 "$bin" init >/dev/null
 "$bin" join demo lead --runtime shell >/dev/null
 "$bin" join demo reviewer --runtime shell >/dev/null
+"$bin" join demo exclusive --runtime shell >/dev/null
+"$bin" actas lead >/dev/null
+HANDOFF_SESSION_ID=session-a "$bin" actas exclusive >/dev/null
+if HANDOFF_SESSION_ID=session-b "$bin" actas exclusive >/dev/null 2>&1; then
+  echo "expected actas lock conflict" >&2
+  exit 1
+fi
 "$bin" actas lead >/dev/null
 
 echo "== send/inbox/history =="
@@ -49,6 +56,11 @@ echo "== send/inbox/history =="
 inbox_count="$("$bin" inbox --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
 test "$inbox_count" -eq 2
 "$bin" history --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)["messages"]) >= 2'
+"$bin" actas lead >/dev/null
+"$bin" to reviewer "Monitor delivery works" >/dev/null
+"$bin" monitor --as reviewer --runtime shell --once | grep "Monitor delivery works" >/dev/null
+monitor_unread="$("$bin" inbox --as reviewer --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
+test "$monitor_unread" -eq 0
 
 echo "== context =="
 "$bin" actas lead >/dev/null
@@ -65,6 +77,14 @@ test -f "$tmp/project/.codex/hooks.json"
 grep "handoff" "$tmp/project/.codex/hooks.json" >/dev/null
 "$bin" mode off --runtime codex --project "$tmp/project" >/dev/null
 test ! -f "$tmp/project/.codex/hooks.json"
+"$bin" mode monitor --runtime claude-code --project "$tmp/claude" >/dev/null
+test -f "$tmp/claude/.claude/settings.local.json"
+grep "SessionStart" "$tmp/claude/.claude/settings.local.json" >/dev/null
+grep "monitor --instruction" "$tmp/claude/.claude/settings.local.json" >/dev/null
+"$bin" mode both --runtime claude-code --project "$tmp/claude" >/dev/null
+grep '"Stop"' "$tmp/claude/.claude/settings.local.json" >/dev/null
+"$bin" mode off --runtime claude-code --project "$tmp/claude" >/dev/null
+test ! -f "$tmp/claude/.claude/settings.local.json"
 
 echo "== background job =="
 job_id="$("$bin" run reviewer --task 'printf "done: %s\n" "$HANDOFF_TASK"' --context "$context_id" --json | json_get '["job_id"]')"

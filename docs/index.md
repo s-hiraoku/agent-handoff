@@ -48,6 +48,8 @@ handoff actas reviewer
 handoff inbox
 ```
 
+`handoff actas <agent>` selects the current sending and receiving role. When the host exposes a stable session id, handoff claims a lease for that role so peer sessions do not stream the same role's inbox.
+
 ## Send Like peerpost
 
 Short message:
@@ -162,10 +164,19 @@ Configure project-local delivery hooks:
 
 ```sh
 handoff mode turn --runtime codex
+handoff mode monitor --runtime claude-code
+handoff mode both --runtime claude-code
 handoff mode off --runtime codex
 ```
 
-`turn` writes a Stop/inbox hook for supported runtimes. `off` removes handoff-owned hook entries and leaves unrelated hooks in place.
+`turn` writes a Stop/inbox hook for supported runtimes. `monitor` writes a Claude Code SessionStart hook that asks the host to launch a persistent inbox stream. `both` installs both paths. `off` removes handoff-owned hook entries and leaves unrelated hooks in place.
+
+Run the stream directly when the host does not manage it:
+
+```sh
+handoff monitor --as reviewer --runtime shell
+handoff monitor --as reviewer --runtime shell --once
+```
 
 ## JSON for Agents
 

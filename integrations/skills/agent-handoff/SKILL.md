@@ -20,6 +20,7 @@ Check identity:
 ```sh
 handoff whoami
 handoff active
+handoff actas <agent>
 ```
 
 Check inbox before starting coordinated work:
@@ -72,6 +73,7 @@ handoff result <job-id>
 - Keep messages short unless sending context.
 - Use `handoff context create` for large diffs, files, or command output.
 - Use `handoff reply <thread-id>` when responding to an existing handoff.
+- Use `handoff monitor --as <agent> --once` for a scriptable one-shot delivery check, or `handoff mode monitor --runtime claude-code` when the host supports persistent Monitor streams.
 - Before assuming another agent ignored a task, check `handoff status` and `handoff logs`.
 - If a job is `blocked`, report the adapter/runtime limitation clearly.
 

@@ -132,6 +132,8 @@ handoff agents
 handoff rename-team <old> <new>
 ```
 
+When the host runtime provides `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, or `CODEX_SESSION_ID`, `actas` claims a lease for that role so another live session cannot accidentally consume the same agent's messages. Without a stable session id, `actas` still selects the active role with a project-local lease.
+
 Messaging:
 
 ```sh
@@ -173,10 +175,13 @@ Delivery mode:
 ```sh
 handoff mode
 handoff mode turn
+handoff mode monitor --runtime claude-code
+handoff mode both --runtime claude-code
 handoff mode off
+handoff monitor --as reviewer --runtime shell
 ```
 
-`mode turn` writes a project-local inbox hook for supported runtimes. `mode off` removes handoff-owned hook entries.
+`mode turn` writes a project-local inbox hook for supported runtimes. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
 
 ## JSON Output
 
