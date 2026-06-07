@@ -1,4 +1,10 @@
 title: agent-handoff
 description: Local-first handoff runtime for coding agents
 theme: minima
+markdown: kramdown
 
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: handoff
