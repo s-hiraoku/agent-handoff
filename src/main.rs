@@ -26,33 +26,61 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    #[command(about = "Initialize local handoff storage")]
     Init,
+    #[command(about = "Register an agent identity for this project")]
     Join(JoinArgs),
+    #[command(about = "List identities registered for this project")]
     Whoami(ProjectArgs),
+    #[command(about = "Select the active agent identity for this project")]
     Actas(AgentArg),
+    #[command(about = "Show the current active agent identity")]
     Active(ProjectArgs),
+    #[command(about = "Remove an agent identity from this project")]
     Drop(AgentArg),
+    #[command(about = "List agents in the active team")]
     Agents(JsonArgs),
+    #[command(about = "List agents in the active team")]
     Team(JsonArgs),
+    #[command(about = "Send a message to another agent")]
     Send(SendArgs),
+    #[command(about = "Send a message to another agent")]
     To(SendArgs),
+    #[command(about = "Send a message using the peerpost-style alias")]
     Post(SendArgs),
+    #[command(about = "Reply to an existing thread")]
     Reply(ReplyArgs),
+    #[command(about = "Read the active agent inbox")]
     Inbox(InboxArgs),
+    #[command(about = "Show recent message history")]
     History(HistoryArgs),
+    #[command(about = "Show a message by id")]
     Show(ShowArgs),
+    #[command(about = "Configure project-local delivery hooks")]
     Mode(ModeArgs),
+    #[command(about = "Stream unread messages for an agent identity")]
     Monitor(MonitorArgs),
+    #[command(about = "Remove the active identity from this project")]
     Leave(LeaveArgs),
+    #[command(about = "Remove all registrations for this project")]
     Reset(ProjectArgs),
+    #[command(about = "Rename a team")]
     RenameTeam(RenameTeamArgs),
+    #[command(about = "Create, show, and list context packages")]
     Context(ContextArgs),
+    #[command(about = "Start a background task for another agent")]
     Run(RunArgs),
+    #[command(about = "Show job status")]
     Status(StatusArgs),
+    #[command(about = "Show job logs")]
     Logs(LogsArgs),
+    #[command(about = "Show a completed job result")]
     Result(ResultArgs),
+    #[command(about = "Cancel a queued or running job")]
     Cancel(JobIdArg),
+    #[command(about = "Retry a job")]
     Retry(RetryArgs),
+    #[command(about = "Install a symlink alias for this binary")]
     InstallAlias(InstallAliasArgs),
     #[command(hide = true)]
     Worker(JobIdArg),
@@ -60,144 +88,171 @@ enum Commands {
 
 #[derive(Args, Debug)]
 struct JsonArgs {
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct ProjectArgs {
-    #[arg(long)]
+    #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct JoinArgs {
+    #[arg(help = "Team name to join or create")]
     team: String,
+    #[arg(help = "Agent identity name")]
     agent: String,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Runtime used by this agent identity")]
     runtime: Option<Runtime>,
-    #[arg(long)]
+    #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct AgentArg {
+    #[arg(help = "Agent identity name")]
     agent: String,
-    #[arg(long)]
+    #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 struct SendArgs {
+    #[arg(help = "Recipient agent name")]
     agent: String,
+    #[arg(help = "Message text. Omit when using --stdin, --file, or --message")]
     message: Vec<String>,
-    #[arg(long = "as")]
+    #[arg(long = "as", help = "Send as this agent identity")]
     as_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Use this team when multiple teams are registered")]
     team: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Read message body from standard input")]
     stdin: bool,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Read message body from a file, or attach it as context with --as-context"
+    )]
     file: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Store --file as a context package instead of using it as the message body"
+    )]
     as_context: bool,
-    #[arg(long)]
+    #[arg(long, help = "Capture git diff as a context package and attach it")]
     git_diff: bool,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Capture command output as a context package and attach it"
+    )]
     cmd: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional subject for the message or context")]
     subject: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Send into an existing thread id")]
     thread: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Attach an existing context id")]
     context: Option<String>,
-    #[arg(long = "message")]
+    #[arg(
+        long = "message",
+        help = "Message text when positional text would be ambiguous"
+    )]
     message_text: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct ReplyArgs {
+    #[arg(help = "Thread id to reply to")]
     thread_id: String,
+    #[arg(help = "Reply text. Omit when using --stdin or --file")]
     message: Vec<String>,
-    #[arg(long = "as")]
+    #[arg(long = "as", help = "Reply as this agent identity")]
     as_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Read reply body from standard input")]
     stdin: bool,
-    #[arg(long)]
+    #[arg(long, help = "Read reply body from a file")]
     file: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Optional subject for the reply")]
     subject: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct InboxArgs {
-    #[arg(long = "as")]
+    #[arg(long = "as", help = "Read inbox for this agent identity")]
     as_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
+    #[arg(long, help = "Read unread messages only")]
     unread: bool,
-    #[arg(long)]
+    #[arg(long, help = "Include already-read messages")]
     all: bool,
-    #[arg(long, default_value_t = DEFAULT_LIMIT)]
+    #[arg(long, help = "Show messages without marking them read")]
+    peek: bool,
+    #[arg(long, help = "Alias for --peek")]
+    no_mark_read: bool,
+    #[arg(long, default_value_t = DEFAULT_LIMIT, help = "Maximum number of messages to show")]
     limit: i64,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct HistoryArgs {
-    #[arg(long = "with")]
+    #[arg(long = "with", help = "Filter history to messages with this agent")]
     with_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Use this team when multiple teams are registered")]
     team: Option<String>,
-    #[arg(long, default_value_t = DEFAULT_LIMIT)]
+    #[arg(long, default_value_t = DEFAULT_LIMIT, help = "Maximum number of messages to show")]
     limit: i64,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct ShowArgs {
+    #[arg(help = "Message id to show")]
     message_id: String,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct ModeArgs {
+    #[arg(help = "Delivery mode to set. Omit to show the current mode")]
     mode: Option<DeliveryMode>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Runtime whose hooks should be configured")]
     runtime: Option<Runtime>,
-    #[arg(long)]
+    #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct MonitorArgs {
-    #[arg(long = "as")]
+    #[arg(long = "as", help = "Stream inbox for this agent identity")]
     as_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Runtime to monitor")]
     runtime: Option<Runtime>,
-    #[arg(long)]
+    #[arg(long, help = "Stable session id for role leases")]
     session_id: Option<String>,
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 5, help = "Polling interval in seconds")]
     interval: u64,
-    #[arg(long)]
+    #[arg(long, help = "Check once and exit")]
     once: bool,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON lines")]
     json: bool,
     #[arg(long, hide = true)]
     instruction: bool,
@@ -205,21 +260,23 @@ struct MonitorArgs {
 
 #[derive(Args, Debug)]
 struct LeaveArgs {
-    #[arg(long)]
+    #[arg(long, help = "Leave this team when multiple teams are registered")]
     team: Option<String>,
-    #[arg(long = "as")]
+    #[arg(long = "as", help = "Leave this agent identity")]
     as_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct RenameTeamArgs {
+    #[arg(help = "Existing team name")]
     old: String,
+    #[arg(help = "New team name")]
     new: String,
-    #[arg(long)]
+    #[arg(long, help = "Merge into an existing team name")]
     merge: bool,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
@@ -238,51 +295,53 @@ enum ContextCommand {
 
 #[derive(Args, Debug)]
 struct ContextCreateArgs {
-    #[arg(long)]
+    #[arg(long, help = "Optional title for this context package")]
     title: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Add literal text to the context package")]
     text: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Read context content from standard input")]
     stdin: bool,
-    #[arg(long)]
+    #[arg(long, help = "Add one file to the context package")]
     file: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Add a file to the context package. Can be repeated")]
     files: Vec<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Capture git diff as context")]
     git_diff: bool,
-    #[arg(long)]
+    #[arg(long, help = "Capture command output as context")]
     cmd: Option<String>,
-    #[arg(long = "as")]
+    #[arg(long = "as", help = "Create context as this agent identity")]
     as_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct ContextShowArgs {
+    #[arg(help = "Context id to show")]
     context_id: String,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct RunArgs {
+    #[arg(help = "Target agent name")]
     agent: String,
-    #[arg(long)]
+    #[arg(long, help = "Task text or shell command for shell runtime")]
     task: String,
-    #[arg(long)]
+    #[arg(long, help = "Attach an existing context id")]
     context: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Capture git diff as context for this task")]
     git_diff: bool,
-    #[arg(long)]
+    #[arg(long, help = "Attach one file as context for this task")]
     file: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Timeout in seconds")]
     timeout: Option<u64>,
-    #[arg(long = "as")]
+    #[arg(long = "as", help = "Request the task as this agent identity")]
     as_agent: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional subject for the task thread")]
     subject: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
     #[arg(skip)]
     retry_of_job_id: Option<String>,
@@ -290,47 +349,56 @@ struct RunArgs {
 
 #[derive(Args, Debug)]
 struct StatusArgs {
+    #[arg(help = "Job id to show. Omit to list recent jobs")]
     job_id: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct LogsArgs {
+    #[arg(help = "Job id whose logs should be shown")]
     job_id: String,
-    #[arg(long)]
+    #[arg(long, help = "Maximum number of log lines")]
     tail: Option<i64>,
-    #[arg(long)]
+    #[arg(long, help = "Accepted for compatibility; currently prints a snapshot")]
     follow: bool,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct ResultArgs {
+    #[arg(help = "Job id whose result should be shown")]
     job_id: String,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct JobIdArg {
+    #[arg(help = "Job id")]
     job_id: String,
 }
 
 #[derive(Args, Debug)]
 struct RetryArgs {
+    #[arg(help = "Job id to retry")]
     job_id: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Retained for compatibility; retry already reuses the original context"
+    )]
     same_context: bool,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
 #[derive(Args, Debug)]
 struct InstallAliasArgs {
+    #[arg(help = "Alias binary name to install")]
     alias: String,
-    #[arg(long)]
+    #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
@@ -391,7 +459,11 @@ struct Identity {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{error:#}");
+        let message = format!("{error:#}");
+        eprintln!("{message}");
+        if let Some(hint) = error_hint(&message) {
+            eprintln!("\nNext steps:\n{hint}");
+        }
         std::process::exit(1);
     }
 }
@@ -403,8 +475,11 @@ fn run() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Inbox(InboxArgs {
         as_agent: None,
+        project: None,
         unread: true,
         all: false,
+        peek: false,
+        no_mark_read: false,
         limit: DEFAULT_LIMIT,
         json: false,
     })) {
@@ -815,17 +890,25 @@ fn cmd_reply(conn: &Connection, args: ReplyArgs) -> Result<()> {
 }
 
 fn cmd_inbox(conn: &Connection, args: InboxArgs) -> Result<()> {
-    let identity = resolve_identity(conn, args.as_agent.as_deref(), None, None)?;
+    let project = project_path(args.project)?;
+    let identity = resolve_identity(conn, args.as_agent.as_deref(), None, Some(&project))?;
     let unread_only = !args.all;
     let messages = inbox_messages(conn, &identity.agent_id, unread_only, args.limit)?;
-    for message in &messages {
-        let message_id = message["id"].as_str().unwrap_or_default();
-        mark_message_read(conn, &identity, message_id)?;
+    let mark_read = !(args.peek || args.no_mark_read);
+    if mark_read {
+        for message in &messages {
+            let message_id = message["id"].as_str().unwrap_or_default();
+            mark_message_read(conn, &identity, message_id)?;
+        }
     }
     if args.json {
-        print_json(json!({"ok": true, "messages": messages}));
+        print_json(json!({"ok": true, "messages": messages, "marked_read": mark_read}));
     } else if messages.is_empty() {
-        println!("No messages");
+        if mark_read {
+            println!("No messages");
+        } else {
+            println!("No messages (peek; nothing marked read)");
+        }
     } else {
         for message in messages {
             println!(
@@ -835,6 +918,9 @@ fn cmd_inbox(conn: &Connection, args: InboxArgs) -> Result<()> {
                 message["to"].as_str().unwrap_or_default(),
                 first_line(message["body"].as_str().unwrap_or_default())
             );
+        }
+        if !mark_read {
+            println!("peek mode: messages were not marked read");
         }
     }
     Ok(())
@@ -1197,19 +1283,26 @@ fn cmd_status(conn: &Connection, args: StatusArgs) -> Result<()> {
         if args.json {
             print_json(json!({"ok": true, "job": status}));
         } else {
-            println!("{}", serde_json::to_string_pretty(&status)?);
+            print_job_status(&status);
         }
     } else {
         let jobs = recent_jobs(conn)?;
         if args.json {
             print_json(json!({"ok": true, "jobs": jobs}));
         } else {
-            for job in jobs {
-                println!(
-                    "[{}] {}",
-                    job["id"].as_str().unwrap_or_default(),
-                    job["state"].as_str().unwrap_or_default()
-                );
+            if jobs.is_empty() {
+                println!("No jobs");
+            } else {
+                for job in jobs {
+                    println!(
+                        "[{}] {} -> {} ({}) {}",
+                        job["id"].as_str().unwrap_or_default(),
+                        job["requested_by"].as_str().unwrap_or_default(),
+                        job["target"].as_str().unwrap_or_default(),
+                        job["runtime"].as_str().unwrap_or_default(),
+                        job["state"].as_str().unwrap_or_default()
+                    );
+                }
             }
         }
     }
@@ -1248,7 +1341,11 @@ fn cmd_result(conn: &Connection, args: ResultArgs) -> Result<()> {
         }
         Ok(())
     } else {
-        bail!("job_not_finished: job has no result yet");
+        bail!(
+            "job_not_finished: job has no result yet\nRun: handoff status {} && handoff logs {}",
+            args.job_id,
+            args.job_id
+        );
     }
 }
 
@@ -2274,6 +2371,53 @@ fn job_logs(conn: &Connection, job_id: &str, limit: i64) -> Result<Vec<serde_jso
     Ok(logs)
 }
 
+fn print_job_status(job: &serde_json::Value) {
+    let id = job["id"].as_str().unwrap_or_default();
+    let state = job["state"].as_str().unwrap_or_default();
+    println!("job {id}");
+    println!("state: {state}");
+    println!(
+        "route: {} -> {} ({})",
+        job["requested_by"].as_str().unwrap_or_default(),
+        job["target"].as_str().unwrap_or_default(),
+        job["runtime"].as_str().unwrap_or_default()
+    );
+    if let Some(context_id) = job["context_id"].as_str() {
+        println!("context: {context_id}");
+    }
+    if let Some(result_message_id) = job["result_message_id"].as_str() {
+        println!("result_message: {result_message_id}");
+        println!("next: handoff result {id}");
+    }
+    if let Some(code) = job["failure_code"].as_str() {
+        println!("failure: {code}");
+    }
+    if let Some(message) = job["failure_message"].as_str() {
+        if !message.trim().is_empty() {
+            println!("detail: {}", first_line(message));
+        }
+    }
+    match state {
+        "queued" | "starting" | "running" => {
+            println!("next: handoff logs {id}");
+        }
+        "blocked" => {
+            let target = job["target"].as_str().unwrap_or("<agent>");
+            let runtime = job["runtime"].as_str().unwrap_or("<runtime>");
+            println!(
+                "next: configure HANDOFF_AGENT_CMD_{} or HANDOFF_RUNTIME_CMD_{}, then run handoff retry {id}",
+                env_key(target),
+                env_key(runtime)
+            );
+        }
+        "failed" | "timeout" => {
+            println!("next: handoff logs {id}");
+            println!("retry: handoff retry {id}");
+        }
+        _ => {}
+    }
+}
+
 fn set_job_state(
     conn: &Connection,
     job_id: &str,
@@ -2532,15 +2676,15 @@ fn apply_delivery_mode(project: &str, runtime: &str, mode: &str) -> Result<()> {
         }
         "codex" => {
             let path = Path::new(project).join(".codex/hooks.json");
-            apply_json_turn_hook(&path, mode)
+            apply_json_turn_hook(&path, project, mode)
         }
         "copilot" => {
             let path = Path::new(project).join(".github/hooks/handoff.json");
-            apply_json_turn_hook(&path, mode)
+            apply_json_turn_hook(&path, project, mode)
         }
         "gemini" | "antigravity" | "opencode" => {
             let path = Path::new(project).join(".agent/rules/handoff.md");
-            apply_markdown_turn_rule(&path, mode)
+            apply_markdown_turn_rule(&path, project, mode)
         }
         "shell" | "unknown" => Ok(()),
         _ => bail!("unsupported_runtime: {runtime}"),
@@ -2551,7 +2695,7 @@ fn apply_claude_code_hooks(path: &Path, project: &str, runtime: &str, mode: &str
     let mut value = read_json_file(path)?;
     remove_handoff_hooks(&mut value);
     if matches!(mode, "turn" | "both") {
-        let command = inbox_hook_command()?;
+        let command = inbox_hook_command(project)?;
         add_json_hook(&mut value, "Stop", &command);
     }
     if matches!(mode, "monitor" | "both") {
@@ -2561,11 +2705,11 @@ fn apply_claude_code_hooks(path: &Path, project: &str, runtime: &str, mode: &str
     write_json_hooks(path, &value)
 }
 
-fn apply_json_turn_hook(path: &Path, mode: &str) -> Result<()> {
+fn apply_json_turn_hook(path: &Path, project: &str, mode: &str) -> Result<()> {
     let mut value = read_json_file(path)?;
     remove_handoff_hooks(&mut value);
     if mode != "off" {
-        let command = inbox_hook_command()?;
+        let command = inbox_hook_command(project)?;
         add_json_hook(&mut value, "Stop", &command);
     }
     write_json_hooks(path, &value)
@@ -2587,7 +2731,7 @@ fn write_json_hooks(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn apply_markdown_turn_rule(path: &Path, mode: &str) -> Result<()> {
+fn apply_markdown_turn_rule(path: &Path, project: &str, mode: &str) -> Result<()> {
     if mode == "off" {
         if path.exists() {
             fs::remove_file(path)?;
@@ -2597,7 +2741,7 @@ fn apply_markdown_turn_rule(path: &Path, mode: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let command = inbox_hook_command()?;
+    let command = inbox_hook_command(project)?;
     fs::write(
         path,
         format!(
@@ -2706,11 +2850,12 @@ fn is_handoff_hook_command(text: &str) -> bool {
             || text.contains("agent-handoff"))
 }
 
-fn inbox_hook_command() -> Result<String> {
+fn inbox_hook_command(project: &str) -> Result<String> {
     let exe = env::current_exe()?;
     Ok(format!(
-        "'{}' inbox --json",
-        shell_quote(&exe.display().to_string())
+        "'{}' inbox --json --project '{}'",
+        shell_quote(&exe.display().to_string()),
+        shell_quote(project)
     ))
 }
 
@@ -2867,6 +3012,30 @@ fn print_json(value: serde_json::Value) {
         "{}",
         serde_json::to_string_pretty(&value).expect("json serialization")
     );
+}
+
+fn error_hint(message: &str) -> Option<&'static str> {
+    if message.contains("multiple_identities") {
+        Some("  handoff active\n  handoff actas <agent>\n  handoff <command> --as <agent>")
+    } else if message.contains("not_joined") {
+        Some("  handoff join <team> <agent> --runtime shell\n  handoff actas <agent>")
+    } else if message.contains("unknown_agent") {
+        Some("  handoff agents\n  handoff join <team> <agent> --runtime shell")
+    } else if message.contains("context_capture_failed") {
+        Some(
+            "  handoff context create --text \"notes\"\n  handoff context create --git-diff\n  handoff context create --file <path>",
+        )
+    } else if message.contains("provide exactly one message source") {
+        Some(
+            "  handoff to <agent> \"message\"\n  command | handoff to <agent> --stdin\n  handoff to <agent> --file <path>",
+        )
+    } else if message.contains("job_not_finished") {
+        Some("  handoff status <job-id>\n  handoff logs <job-id>")
+    } else if message.contains("role_locked") {
+        Some("  Use another agent identity, or wait for the role lease to expire.")
+    } else {
+        None
+    }
 }
 
 fn first_line(value: &str) -> &str {
@@ -3188,6 +3357,94 @@ mod tests {
     }
 
     #[test]
+    fn inbox_peek_does_not_mark_messages_read() {
+        let (_dir, conn) = test_conn();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "alice".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "bob".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_send(
+            &conn,
+            SendArgs {
+                agent: "bob".into(),
+                message: vec!["peek me".into()],
+                as_agent: Some("alice".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        cmd_inbox(
+            &conn,
+            InboxArgs {
+                as_agent: Some("bob".into()),
+                project: None,
+                unread: true,
+                all: false,
+                peek: true,
+                no_mark_read: false,
+                limit: 10,
+                json: false,
+            },
+        )
+        .unwrap();
+        let bob = agent_by_name(&conn, &get_or_create_team(&conn, "team").unwrap(), "bob").unwrap();
+        assert_eq!(
+            inbox_messages(&conn, &bob.agent_id, true, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        cmd_inbox(
+            &conn,
+            InboxArgs {
+                as_agent: Some("bob".into()),
+                project: None,
+                unread: true,
+                all: false,
+                peek: false,
+                no_mark_read: false,
+                limit: 10,
+                json: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            inbox_messages(&conn, &bob.agent_id, true, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn mode_turn_writes_codex_hook_and_off_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_path_buf();
@@ -3206,6 +3463,7 @@ mod tests {
         let content = fs::read_to_string(&hook_path).unwrap();
         assert!(content.contains("handoff"));
         assert!(content.contains("inbox"));
+        assert!(content.contains("--project"));
 
         cmd_mode(
             &conn,
@@ -3254,6 +3512,7 @@ mod tests {
         let content = fs::read_to_string(&hook_path).unwrap();
         assert!(content.contains("SessionStart"));
         assert!(content.contains("\"Stop\""));
+        assert!(content.contains("inbox --json --project"));
     }
 
     #[test]
@@ -3287,5 +3546,24 @@ mod tests {
         let content = fs::read_to_string(&hook_path).unwrap();
         assert!(content.contains("theme"));
         assert!(!content.contains("handoff"));
+    }
+
+    #[test]
+    fn error_hints_cover_common_operator_failures() {
+        assert!(
+            error_hint("multiple_identities: use --as <agent>")
+                .unwrap()
+                .contains("handoff actas")
+        );
+        assert!(
+            error_hint("context_capture_failed: provide input")
+                .unwrap()
+                .contains("handoff context create")
+        );
+        assert!(
+            error_hint("job_not_finished: job has no result yet")
+                .unwrap()
+                .contains("handoff status")
+        );
     }
 }

@@ -16,6 +16,14 @@ Set `HANDOFF_BIN` if `handoff` is not on `PATH`:
 HANDOFF_BIN=/absolute/path/to/handoff npm start
 ```
 
+Set `HANDOFF_PROJECT` when the MCP host may start the server outside your repository:
+
+```sh
+HANDOFF_PROJECT=/absolute/path/to/project npm start
+```
+
+Each tool also accepts an optional `project` argument. Tool-level `project` takes precedence over `HANDOFF_PROJECT`; otherwise the server uses its current working directory.
+
 ## MCP Config
 
 ```json
@@ -25,7 +33,8 @@ HANDOFF_BIN=/absolute/path/to/handoff npm start
       "command": "node",
       "args": ["/absolute/path/to/agent-handoff/integrations/mcp/agent-handoff-mcp/server.js"],
       "env": {
-        "HANDOFF_BIN": "handoff"
+        "HANDOFF_BIN": "handoff",
+        "HANDOFF_PROJECT": "/absolute/path/to/project"
       }
     }
   }
@@ -37,8 +46,14 @@ HANDOFF_BIN=/absolute/path/to/handoff npm start
 - `handoff_send`
 - `handoff_inbox`
 - `handoff_context_create`
+- `handoff_context_file`
+- `handoff_context_show`
+- `handoff_reply`
+- `handoff_history`
+- `handoff_show`
 - `handoff_run`
 - `handoff_status`
 - `handoff_logs`
 - `handoff_result`
-
+- `handoff_cancel`
+- `handoff_retry`
