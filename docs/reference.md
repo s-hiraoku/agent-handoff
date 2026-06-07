@@ -100,7 +100,7 @@ reference_search: true
           </tr>
           <tr tabindex="0" data-command-row data-category="jobs" data-command="handoff logs result retry" data-use="Inspect and recover job output." data-recovery="Retry failed, timed-out, or blocked work.">
             <td><code>handoff logs &lt;job-id&gt;</code></td>
-            <td>Inspect adapter, stdout, and stderr logs.</td>
+            <td>Inspect adapter, stdout, and stderr logs; use follow mode to stream until completion.</td>
             <td><code>--tail</code> <code>--follow</code> <code>--json</code></td>
             <td>Log lines, or JSON log objects.</td>
             <td>Run <code>handoff retry &lt;job-id&gt;</code> after fixing the cause.</td>

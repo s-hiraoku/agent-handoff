@@ -118,4 +118,18 @@ echo "== timeout =="
 timeout_id="$("$bin" run reviewer --task 'sleep 2' --timeout 1 --as lead --json | json_get '["job_id"]')"
 wait_for_state "$timeout_id" timeout
 
+echo "== cancel state is terminal =="
+cancel_id="$("$bin" run reviewer --task 'sleep 2; printf should-not-finish' --as lead --json | json_get '["job_id"]')"
+sleep 0.2
+"$bin" cancel "$cancel_id" >/dev/null
+wait_for_state "$cancel_id" cancelled
+sleep 0.5
+cancel_state="$("$bin" status "$cancel_id" --json | json_get '["job"]["state"]')"
+test "$cancel_state" = cancelled
+
+echo "== follow logs =="
+follow_id="$("$bin" run reviewer --task 'printf "follow-one\n"; sleep 0.3; printf "follow-two\n"' --as lead --json | json_get '["job_id"]')"
+"$bin" logs "$follow_id" --follow | grep "follow-two" >/dev/null
+wait_for_state "$follow_id" succeeded
+
 echo "CLI smoke test passed."
