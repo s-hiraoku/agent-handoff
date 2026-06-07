@@ -50,6 +50,8 @@ handoff inbox
 
 `handoff actas <agent>` selects the current sending and receiving role. When the host exposes a stable session id, handoff claims a lease for that role so peer sessions do not stream the same role's inbox.
 
+Use `handoff inbox --peek` to inspect unread messages without marking them read. This is useful when an agent or script wants to decide whether to act before consuming the inbox.
+
 ## Send Like peerpost
 
 Short message:
@@ -129,6 +131,8 @@ handoff logs <job-id>
 handoff result <job-id>
 ```
 
+`handoff status <job-id>` prints a compact summary for humans. Use `handoff status <job-id> --json` for scripts and agent integrations. Blocked, failed, and timed-out jobs include the next command to check logs or retry.
+
 Cancel or retry:
 
 ```sh
@@ -197,6 +201,10 @@ integrations/mcp/agent-handoff-mcp/
 ```
 
 It exposes tools for send, inbox, context creation, run, status, logs, and result.
+
+Set `HANDOFF_PROJECT=/absolute/path/to/project` in the MCP config when the MCP host may start outside your repository. Each MCP tool also accepts an optional `project` argument; the server uses that value first, then `HANDOFF_PROJECT`, then its own current working directory.
+
+The MCP server exposes tools for sending, replying, inbox reads, history, message/context lookup, context creation from text/git diff/commands/files, jobs, logs, results, cancel, and retry.
 
 ## Testing
 

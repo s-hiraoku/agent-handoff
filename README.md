@@ -76,6 +76,12 @@ handoff actas reviewer
 handoff inbox
 ```
 
+Preview without marking messages read:
+
+```sh
+handoff inbox --peek
+```
+
 Send command output or a file:
 
 ```sh
@@ -102,6 +108,8 @@ handoff status
 handoff logs <job-id>
 handoff result <job-id>
 ```
+
+`handoff status <job-id>` prints a short human-readable summary by default. Use `--json` when scripting.
 
 For `shell` runtime, the task text is executed by the shell. For other runtimes, set an adapter command:
 
@@ -245,12 +253,15 @@ Example MCP config:
       "command": "node",
       "args": ["/absolute/path/to/agent-handoff/integrations/mcp/agent-handoff-mcp/server.js"],
       "env": {
-        "HANDOFF_BIN": "handoff"
+        "HANDOFF_BIN": "handoff",
+        "HANDOFF_PROJECT": "/absolute/path/to/project"
       }
     }
   }
 }
 ```
+
+`HANDOFF_PROJECT` pins project identity resolution for MCP clients whose server process may start outside the repository. Each MCP tool also accepts an optional `project` argument; when omitted, the server uses `HANDOFF_PROJECT`, then its current working directory.
 
 ## Design Notes
 

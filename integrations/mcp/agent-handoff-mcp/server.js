@@ -3,14 +3,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { spawn } from "node:child_process";
+import path from "node:path";
 
 const HANDOFF_BIN = process.env.HANDOFF_BIN || "handoff";
 
-function runHandoff(args, input) {
+function projectCwd(project) {
+  return path.resolve(project || process.env.HANDOFF_PROJECT || process.cwd());
+}
+
+function runHandoff(args, input, project) {
   return new Promise((resolve) => {
     const child = spawn(HANDOFF_BIN, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env
+      env: process.env,
+      cwd: projectCwd(project)
     });
 
     let stdout = "";
@@ -61,14 +67,21 @@ server.tool(
     agent: z.string(),
     message: z.string(),
     asAgent: z.string().optional(),
-    subject: z.string().optional()
+    subject: z.string().optional(),
+    team: z.string().optional(),
+    threadId: z.string().optional(),
+    contextId: z.string().optional(),
+    project: z.string().optional()
   },
-  async ({ agent, message, asAgent, subject }) => {
+  async ({ agent, message, asAgent, subject, team, threadId, contextId, project }) => {
     const args = ["to", agent, message];
     if (asAgent) args.push("--as", asAgent);
     if (subject) args.push("--subject", subject);
+    if (team) args.push("--team", team);
+    if (threadId) args.push("--thread", threadId);
+    if (contextId) args.push("--context", contextId);
     args.push("--json");
-    return textResult(await runHandoff(args));
+    return textResult(await runHandoff(args, undefined, project));
   }
 );
 
@@ -78,14 +91,17 @@ server.tool(
   {
     asAgent: z.string().optional(),
     all: z.boolean().optional(),
-    limit: z.number().int().positive().optional()
+    peek: z.boolean().optional(),
+    limit: z.number().int().positive().optional(),
+    project: z.string().optional()
   },
-  async ({ asAgent, all, limit }) => {
+  async ({ asAgent, all, peek, limit, project }) => {
     const args = ["inbox", "--json"];
     if (asAgent) args.push("--as", asAgent);
     if (all) args.push("--all");
+    if (peek) args.push("--peek");
     if (limit) args.push("--limit", String(limit));
-    return textResult(await runHandoff(args));
+    return textResult(await runHandoff(args, undefined, project));
   }
 );
 
@@ -94,19 +110,28 @@ server.tool(
   "Create a context package from text, stdin content, git diff, or a command.",
   {
     text: z.string().optional(),
+    stdin: z.string().optional(),
     gitDiff: z.boolean().optional(),
     command: z.string().optional(),
+    file: z.string().optional(),
+    files: z.array(z.string()).optional(),
     title: z.string().optional(),
-    asAgent: z.string().optional()
+    asAgent: z.string().optional(),
+    project: z.string().optional()
   },
-  async ({ text, gitDiff, command, title, asAgent }) => {
+  async ({ text, stdin, gitDiff, command, file, files, title, asAgent, project }) => {
     const args = ["context", "create", "--json"];
     if (text) args.push("--text", text);
+    if (stdin) args.push("--stdin");
     if (gitDiff) args.push("--git-diff");
     if (command) args.push("--cmd", command);
+    if (file) args.push("--file", file);
+    if (files) {
+      for (const item of files) args.push("--files", item);
+    }
     if (title) args.push("--title", title);
     if (asAgent) args.push("--as", asAgent);
-    return textResult(await runHandoff(args));
+    return textResult(await runHandoff(args, stdin, project));
   }
 );
 
@@ -117,13 +142,16 @@ server.tool(
     agent: z.string(),
     task: z.string(),
     contextId: z.string().optional(),
-    asAgent: z.string().optional()
+    asAgent: z.string().optional(),
+    timeout: z.number().int().positive().optional(),
+    project: z.string().optional()
   },
-  async ({ agent, task, contextId, asAgent }) => {
+  async ({ agent, task, contextId, asAgent, timeout, project }) => {
     const args = ["run", agent, "--task", task, "--json"];
     if (contextId) args.push("--context", contextId);
     if (asAgent) args.push("--as", asAgent);
-    return textResult(await runHandoff(args));
+    if (timeout) args.push("--timeout", String(timeout));
+    return textResult(await runHandoff(args, undefined, project));
   }
 );
 
@@ -131,12 +159,13 @@ server.tool(
   "handoff_status",
   "Show one job status or recent jobs.",
   {
-    jobId: z.string().optional()
+    jobId: z.string().optional(),
+    project: z.string().optional()
   },
-  async ({ jobId }) => {
+  async ({ jobId, project }) => {
     const args = ["status", "--json"];
     if (jobId) args.splice(1, 0, jobId);
-    return textResult(await runHandoff(args));
+    return textResult(await runHandoff(args, undefined, project));
   }
 );
 
@@ -145,12 +174,13 @@ server.tool(
   "Show logs for a background job.",
   {
     jobId: z.string(),
-    tail: z.number().int().positive().optional()
+    tail: z.number().int().positive().optional(),
+    project: z.string().optional()
   },
-  async ({ jobId, tail }) => {
+  async ({ jobId, tail, project }) => {
     const args = ["logs", jobId, "--json"];
     if (tail) args.push("--tail", String(tail));
-    return textResult(await runHandoff(args));
+    return textResult(await runHandoff(args, undefined, project));
   }
 );
 
@@ -158,13 +188,114 @@ server.tool(
   "handoff_result",
   "Show the final result of a completed job.",
   {
-    jobId: z.string()
+    jobId: z.string(),
+    project: z.string().optional()
   },
-  async ({ jobId }) => {
-    return textResult(await runHandoff(["result", jobId, "--json"]));
+  async ({ jobId, project }) => {
+    return textResult(await runHandoff(["result", jobId, "--json"], undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_reply",
+  "Reply to an existing handoff thread.",
+  {
+    threadId: z.string(),
+    message: z.string(),
+    asAgent: z.string().optional(),
+    subject: z.string().optional(),
+    project: z.string().optional()
+  },
+  async ({ threadId, message, asAgent, subject, project }) => {
+    const args = ["reply", threadId, message, "--json"];
+    if (asAgent) args.push("--as", asAgent);
+    if (subject) args.push("--subject", subject);
+    return textResult(await runHandoff(args, undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_history",
+  "Show recent message history for the active team.",
+  {
+    withAgent: z.string().optional(),
+    team: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+    project: z.string().optional()
+  },
+  async ({ withAgent, team, limit, project }) => {
+    const args = ["history", "--json"];
+    if (withAgent) args.push("--with", withAgent);
+    if (team) args.push("--team", team);
+    if (limit) args.push("--limit", String(limit));
+    return textResult(await runHandoff(args, undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_show",
+  "Show a message by id.",
+  {
+    messageId: z.string(),
+    project: z.string().optional()
+  },
+  async ({ messageId, project }) => {
+    return textResult(await runHandoff(["show", messageId, "--json"], undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_context_show",
+  "Show a context package by id.",
+  {
+    contextId: z.string(),
+    project: z.string().optional()
+  },
+  async ({ contextId, project }) => {
+    return textResult(await runHandoff(["context", "show", contextId, "--json"], undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_context_file",
+  "Create a context package from one file.",
+  {
+    file: z.string(),
+    title: z.string().optional(),
+    asAgent: z.string().optional(),
+    project: z.string().optional()
+  },
+  async ({ file, title, asAgent, project }) => {
+    const args = ["context", "create", "--file", file, "--json"];
+    if (title) args.push("--title", title);
+    if (asAgent) args.push("--as", asAgent);
+    return textResult(await runHandoff(args, undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_cancel",
+  "Cancel a queued or running background job.",
+  {
+    jobId: z.string(),
+    project: z.string().optional()
+  },
+  async ({ jobId, project }) => {
+    return textResult(await runHandoff(["cancel", jobId], undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_retry",
+  "Retry a background job.",
+  {
+    jobId: z.string(),
+    project: z.string().optional()
+  },
+  async ({ jobId, project }) => {
+    return textResult(await runHandoff(["retry", jobId, "--json"], undefined, project));
   }
 );
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-

@@ -29,6 +29,12 @@ Check inbox before starting coordinated work:
 handoff inbox
 ```
 
+Preview inbox without consuming unread messages:
+
+```sh
+handoff inbox --peek
+```
+
 Send a concise message:
 
 ```sh
@@ -70,10 +76,12 @@ handoff result <job-id>
 ## Agent Behavior
 
 - Prefer `--json` when parsing command output programmatically.
+- For MCP use, set `HANDOFF_PROJECT` or pass the MCP tool `project` argument so identities resolve against the intended repository.
 - Keep messages short unless sending context.
 - Use `handoff context create` for large diffs, files, or command output.
 - Use `handoff reply <thread-id>` when responding to an existing handoff.
 - Use `handoff monitor --as <agent> --once` for a scriptable one-shot delivery check, or `handoff mode monitor --runtime claude-code` when the host supports persistent Monitor streams.
+- Use `handoff inbox --peek` when checking whether work exists without marking messages read.
 - Before assuming another agent ignored a task, check `handoff status` and `handoff logs`.
 - If a job is `blocked`, report the adapter/runtime limitation clearly.
 

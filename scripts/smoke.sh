@@ -57,6 +57,14 @@ inbox_count="$("$bin" inbox --json | python3 -c 'import json,sys; print(len(json
 test "$inbox_count" -eq 2
 "$bin" history --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)["messages"]) >= 2'
 "$bin" actas lead >/dev/null
+"$bin" to reviewer "Peek safety" >/dev/null
+peek_count="$("$bin" inbox --as reviewer --peek --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["marked_read"] is False; print(len(data["messages"]))')"
+test "$peek_count" -eq 1
+after_peek_count="$("$bin" inbox --as reviewer --peek --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
+test "$after_peek_count" -eq 1
+"$bin" inbox --as reviewer >/dev/null
+cleared_count="$("$bin" inbox --as reviewer --peek --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
+test "$cleared_count" -eq 0
 "$bin" to reviewer "Monitor delivery works" >/dev/null
 "$bin" monitor --as reviewer --runtime shell --once | grep "Monitor delivery works" >/dev/null
 monitor_unread="$("$bin" inbox --as reviewer --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
@@ -75,6 +83,7 @@ echo "== delivery mode hooks =="
 "$bin" mode turn --runtime codex --project "$tmp/project" >/dev/null
 test -f "$tmp/project/.codex/hooks.json"
 grep "handoff" "$tmp/project/.codex/hooks.json" >/dev/null
+grep -- "--project" "$tmp/project/.codex/hooks.json" >/dev/null
 "$bin" mode off --runtime codex --project "$tmp/project" >/dev/null
 test ! -f "$tmp/project/.codex/hooks.json"
 "$bin" mode monitor --runtime claude-code --project "$tmp/claude" >/dev/null
@@ -89,6 +98,7 @@ test ! -f "$tmp/claude/.claude/settings.local.json"
 echo "== background job =="
 job_id="$("$bin" run reviewer --task 'printf "done: %s\n" "$HANDOFF_TASK"' --context "$context_id" --json | json_get '["job_id"]')"
 wait_for_state "$job_id" succeeded
+"$bin" status "$job_id" | grep "state: succeeded" >/dev/null
 "$bin" logs "$job_id" | grep "done:" >/dev/null
 "$bin" result "$job_id" | grep "done:" >/dev/null
 quick_timeout_id="$("$bin" run reviewer --task 'printf quick' --timeout 5 --as lead --json | json_get '["job_id"]')"
@@ -102,6 +112,7 @@ echo "== blocked non-shell runtime =="
 "$bin" join demo codexbot --runtime codex >/dev/null
 blocked_id="$("$bin" run codexbot --task "review this" --as lead --json | json_get '["job_id"]')"
 wait_for_state "$blocked_id" blocked
+"$bin" status "$blocked_id" | grep "HANDOFF_RUNTIME_CMD_CODEX" >/dev/null
 
 echo "== timeout =="
 timeout_id="$("$bin" run reviewer --task 'sleep 2' --timeout 1 --as lead --json | json_get '["job_id"]')"
