@@ -106,10 +106,11 @@ Run a background task:
 handoff run reviewer --task 'echo reviewed: "$HANDOFF_TASK"'
 handoff status
 handoff logs <job-id>
+handoff logs <job-id> --follow
 handoff result <job-id>
 ```
 
-`handoff status <job-id>` prints a short human-readable summary by default. Use `--json` when scripting.
+`handoff status <job-id>` prints a short human-readable summary by default. `handoff logs --follow` streams new adapter/stdout/stderr log lines until the job reaches a terminal state. Use `--json` when scripting.
 
 For `shell` runtime, the task text is executed by the shell. For other runtimes, set an adapter command:
 
@@ -173,6 +174,7 @@ handoff run <agent> --task <text>
 handoff run <agent> --task <text> --timeout 30
 handoff status [job-id]
 handoff logs <job-id>
+handoff logs <job-id> --follow
 handoff result <job-id>
 handoff cancel <job-id>
 handoff retry <job-id>
@@ -272,7 +274,7 @@ Example MCP config:
 - No remote service is required for MVP operation.
 - Messages, context, logs, and job results stay under `HANDOFF_HOME`.
 
-The MVP intentionally uses a structured Rust CLI and SQLite storage instead of a shell-script architecture. SQLite is used as a durable local event store and query model.
+The MVP intentionally uses a structured Rust CLI and SQLite storage instead of a shell-script architecture. SQLite is used as a durable local event store and query model, with schema versioning, foreign key enforcement for new databases, and indexes for common inbox/history/job-log queries.
 
 ## Development
 
@@ -286,8 +288,10 @@ The suite runs:
 
 - `cargo fmt --check`
 - `cargo check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test`
-- CLI smoke tests for identity, messaging, context, jobs, retry, and blocked adapters
+- CLI smoke tests for identity, messaging, context, jobs, retry, cancellation, log following, and blocked adapters
+- MCP smoke tests that call the server through the MCP SDK
 - MCP server syntax and dependency checks
 - release build
 

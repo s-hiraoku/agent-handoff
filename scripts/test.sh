@@ -10,6 +10,9 @@ cargo fmt --check
 echo "== cargo check =="
 cargo check
 
+echo "== cargo clippy =="
+cargo clippy --all-targets --all-features -- -D warnings
+
 echo "== cargo test =="
 cargo test
 
@@ -23,4 +26,3 @@ echo "== release build =="
 cargo build --release
 
 echo "All tests passed."
-

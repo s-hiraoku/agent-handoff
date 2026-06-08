@@ -57,3 +57,13 @@ Each tool also accepts an optional `project` argument. Tool-level `project` take
 - `handoff_result`
 - `handoff_cancel`
 - `handoff_retry`
+
+## Test
+
+From the repository root:
+
+```sh
+./scripts/test-mcp.sh
+```
+
+The smoke test starts the MCP server with an isolated `HANDOFF_HOME`, calls tools through the MCP SDK, and verifies context creation, sending, and inbox reads.
