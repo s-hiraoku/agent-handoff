@@ -173,7 +173,7 @@ handoff to reviewer --context "$CTX" --message "Use this diff."</code></pre>
             <p>Shell runtime executes the task text. Other runtimes need adapter commands.</p>
             <pre class="command-block"><code>handoff run reviewer --task 'echo reviewed: "$HANDOFF_TASK"' --context "$CTX"
 handoff status &lt;job-id&gt;
-handoff logs &lt;job-id&gt;
+handoff logs &lt;job-id&gt; --follow
 handoff result &lt;job-id&gt;</code></pre>
           </div>
         </article>
