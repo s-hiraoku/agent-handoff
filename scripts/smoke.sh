@@ -37,6 +37,7 @@ wait_for_state() {
 }
 
 echo "== init/join/actas =="
+"$bin" --version | grep "handoff 0.2.0" >/dev/null
 "$bin" init >/dev/null
 "$bin" join demo lead --runtime shell >/dev/null
 "$bin" join demo reviewer --runtime shell >/dev/null

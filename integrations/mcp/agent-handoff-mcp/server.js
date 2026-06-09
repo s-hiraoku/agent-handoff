@@ -3,9 +3,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const HANDOFF_BIN = process.env.HANDOFF_BIN || "handoff";
+const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 function projectCwd(project) {
   return path.resolve(project || process.env.HANDOFF_PROJECT || process.cwd());
@@ -44,6 +46,7 @@ function runHandoff(args, input, project) {
 
 function textResult(result) {
   const text = result.ok ? result.stdout : `${result.stderr}\n${result.stdout}`.trim();
+  const structuredContent = parseStructuredContent(result, text);
   return {
     content: [
       {
@@ -51,13 +54,36 @@ function textResult(result) {
         text: text || "(no output)"
       }
     ],
+    structuredContent,
+    _meta: {
+      handoffExitCode: result.code
+    },
     isError: !result.ok
+  };
+}
+
+function parseStructuredContent(result, text) {
+  if (result.ok) {
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      return {
+        ok: true,
+        output: text
+      };
+    }
+  }
+  return {
+    ok: false,
+    code: result.code,
+    stdout: result.stdout,
+    stderr: result.stderr
   };
 }
 
 const server = new McpServer({
   name: "agent-handoff",
-  version: "0.1.0"
+  version: packageJson.version
 });
 
 server.tool(

@@ -195,6 +195,10 @@ handoff retry &lt;job-id&gt;</code></pre>
         <p>Jobs receive <code>HANDOFF_JOB_ID</code>, <code>HANDOFF_TASK</code>, and <code>HANDOFF_CONTEXT</code>.</p>
       </div>
       <div class="note-panel">
+        <strong>Trust boundary</strong>
+        <p>Shell jobs, command captures, and adapters execute locally; use them only with trusted input.</p>
+      </div>
+      <div class="note-panel">
         <strong>Delivery modes</strong>
         <p>Use <code>handoff mode turn --runtime codex</code> or <code>handoff mode both --runtime claude-code</code> for hooks.</p>
       </div>
@@ -226,7 +230,7 @@ handoff retry &lt;job-id&gt;</code></pre>
     <aside class="side-stack">
       <div class="note-panel">
         <strong>Tools</strong>
-        <p>Send, reply, inbox, history, context, jobs, logs, result, cancel, and retry.</p>
+        <p>Send, reply, inbox, history, context, jobs, logs, result, cancel, and retry. JSON results are also exposed as MCP structured content.</p>
       </div>
       <div class="note-panel">
         <strong>Troubleshooting</strong>

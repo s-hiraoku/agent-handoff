@@ -24,6 +24,8 @@ HANDOFF_PROJECT=/absolute/path/to/project npm start
 
 Each tool also accepts an optional `project` argument. Tool-level `project` takes precedence over `HANDOFF_PROJECT`; otherwise the server uses its current working directory.
 
+Tool results preserve the CLI JSON text for compatibility and also expose the parsed JSON as MCP `structuredContent` when the wrapped CLI command emits JSON.
+
 ## MCP Config
 
 ```json
@@ -57,6 +59,10 @@ Each tool also accepts an optional `project` argument. Tool-level `project` take
 - `handoff_result`
 - `handoff_cancel`
 - `handoff_retry`
+
+## Trust Boundary
+
+This server wraps a local CLI and inherits its execution behavior. `handoff_run`, `handoff_context_create` with `command`, and configured adapter commands may execute local shell commands through `HANDOFF_BIN`. Run the MCP server only for trusted clients and trusted projects; do not expose it as a network service for untrusted users.
 
 ## Test
 

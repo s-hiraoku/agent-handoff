@@ -116,7 +116,7 @@ reference_search: true
             <td><code>handoff_context_file</code></td>
             <td>Create context from a file through MCP.</td>
             <td><code>file</code> <code>title</code> <code>asAgent</code> <code>project</code></td>
-            <td>Text result containing CLI JSON.</td>
+            <td>Text result containing CLI JSON plus matching MCP structured content.</td>
             <td>Use CLI <code>handoff context create --file</code> as fallback.</td>
           </tr>
         </tbody>

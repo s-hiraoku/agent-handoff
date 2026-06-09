@@ -263,7 +263,7 @@ Example MCP config:
 }
 ```
 
-`HANDOFF_PROJECT` pins project identity resolution for MCP clients whose server process may start outside the repository. Each MCP tool also accepts an optional `project` argument; when omitted, the server uses `HANDOFF_PROJECT`, then its current working directory.
+`HANDOFF_PROJECT` pins project identity resolution for MCP clients whose server process may start outside the repository. Each MCP tool also accepts an optional `project` argument; when omitted, the server uses `HANDOFF_PROJECT`, then its current working directory. Tool results keep the CLI JSON text for compatibility and also expose the parsed object as MCP `structuredContent` when the CLI emits JSON.
 
 ## Design Notes
 
@@ -273,6 +273,13 @@ Example MCP config:
 - No telemetry is sent.
 - No remote service is required for MVP operation.
 - Messages, context, logs, and job results stay under `HANDOFF_HOME`.
+
+`handoff` is a local execution tool, not a sandbox. Treat message text, context captures, adapter commands, and `--cmd` inputs as trusted local operator input:
+
+- `handoff run` executes shell tasks directly for `shell` runtime.
+- `handoff context create --cmd` and adapter commands run through the local shell.
+- MCP clients can trigger the same local CLI behavior through the configured `HANDOFF_BIN`.
+- Do not expose the MCP server or adapter environment to untrusted users or unreviewed automated input.
 
 The MVP intentionally uses a structured Rust CLI and SQLite storage instead of a shell-script architecture. SQLite is used as a durable local event store and query model, with schema versioning, foreign key enforcement for new databases, and indexes for common inbox/history/job-log queries.
 

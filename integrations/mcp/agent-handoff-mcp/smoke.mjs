@@ -14,6 +14,11 @@ function parseToolJson(result) {
   if (!parsed.ok) {
     throw new Error(`MCP tool returned ok=false: ${text}`);
   }
+  if (JSON.stringify(result.structuredContent) !== JSON.stringify(parsed)) {
+    throw new Error(
+      `MCP structuredContent did not match text JSON: ${JSON.stringify(result.structuredContent)}`,
+    );
+  }
   return parsed;
 }
 
@@ -36,7 +41,7 @@ const transport = new StdioClientTransport({
 
 const client = new Client({
   name: "agent-handoff-mcp-smoke",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 await client.connect(transport);
