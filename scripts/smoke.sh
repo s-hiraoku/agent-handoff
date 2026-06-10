@@ -106,7 +106,9 @@ quick_timeout_id="$("$bin" run reviewer --task 'printf quick' --timeout 5 --as l
 wait_for_state "$quick_timeout_id" succeeded
 
 echo "== delegate =="
+# shellcheck disable=SC2016
 "$bin" delegate reviewer --task 'printf "delegated: %s\n" "$HANDOFF_TASK"' --wait --as lead | grep "delegated:" >/dev/null
+# shellcheck disable=SC2016
 printf 'stdin delegate context\n' | "$bin" delegate reviewer --task 'printf "%s\n" "$HANDOFF_CONTEXT"' --stdin --wait --as lead | grep "stdin delegate context" >/dev/null
 
 echo "== retry =="

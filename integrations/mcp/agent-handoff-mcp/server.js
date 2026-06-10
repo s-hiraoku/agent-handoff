@@ -8,6 +8,7 @@ import path from "node:path";
 
 const HANDOFF_BIN = process.env.HANDOFF_BIN || "handoff";
 const DEFAULT_HANDOFF_TIMEOUT_MS = 30000;
+const DELEGATE_WAIT_BUFFER_MS = 5000;
 const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 function projectCwd(project) {
@@ -235,7 +236,7 @@ server.tool(
     if (asAgent) args.push("--as", asAgent);
     if (subject) args.push("--subject", subject);
     if (timeout) args.push("--timeout", String(timeout));
-    const timeoutMs = wait && timeout ? (timeout * 1000) + 5000 : undefined;
+    const timeoutMs = wait && timeout ? (timeout * 1000) + DELEGATE_WAIT_BUFFER_MS : undefined;
     return textResult(await runHandoff(args, stdin, project, { timeoutMs }));
   }
 );
