@@ -66,6 +66,8 @@ handoff to <agent> --file <path> --as-context --message "Use this file as contex
 Run background work:
 
 ```sh
+handoff delegate <agent> --task "task text" --context <context-id> --wait
+handoff delegate <agent> --stdin --task "review this context" --wait
 handoff run <agent> --task "task text" --context <context-id>
 handoff run <agent> --task "task text" --timeout 30
 handoff status <job-id>
@@ -79,6 +81,7 @@ handoff result <job-id>
 - For MCP use, set `HANDOFF_PROJECT` or pass the MCP tool `project` argument so identities resolve against the intended repository.
 - Keep messages short unless sending context.
 - Use `handoff context create` for large diffs, files, or command output.
+- Use `handoff delegate --wait` when you need a synchronous sub-agent style result.
 - Use `handoff reply <thread-id>` when responding to an existing handoff.
 - Use `handoff monitor --as <agent> --once` for a scriptable one-shot delivery check, or `handoff mode monitor --runtime claude-code` when the host supports persistent Monitor streams.
 - Use `handoff inbox --peek` when checking whether work exists without marking messages read.

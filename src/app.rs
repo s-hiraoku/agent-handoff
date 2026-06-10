@@ -75,6 +75,8 @@ enum Commands {
     Context(ContextArgs),
     #[command(about = "Start a background task for another agent")]
     Run(RunArgs),
+    #[command(about = "Delegate a task and optionally wait for the result")]
+    Delegate(DelegateArgs),
     #[command(about = "Show job status")]
     Status(StatusArgs),
     #[command(about = "Show job logs")]
@@ -353,6 +355,32 @@ struct RunArgs {
 }
 
 #[derive(Args, Debug)]
+struct DelegateArgs {
+    #[arg(help = "Target agent name")]
+    agent: String,
+    #[arg(long, help = "Task instructions for the target agent")]
+    task: Option<String>,
+    #[arg(long, help = "Attach an existing context id")]
+    context: Option<String>,
+    #[arg(long, help = "Capture git diff as context for this task")]
+    git_diff: bool,
+    #[arg(long, help = "Read context content from standard input")]
+    stdin: bool,
+    #[arg(long, help = "Attach one file as context for this task")]
+    file: Option<PathBuf>,
+    #[arg(long, help = "Timeout in seconds for the delegated job")]
+    timeout: Option<u64>,
+    #[arg(long, help = "Wait for the job to finish and print the result")]
+    wait: bool,
+    #[arg(long = "as", help = "Request the task as this agent identity")]
+    as_agent: Option<String>,
+    #[arg(long, help = "Optional subject for the task thread")]
+    subject: Option<String>,
+    #[arg(long, help = "Print machine-readable JSON")]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct StatusArgs {
     #[arg(help = "Job id to show. Omit to list recent jobs")]
     job_id: Option<String>,
@@ -509,6 +537,7 @@ fn run() -> Result<()> {
         Commands::RenameTeam(args) => cmd_rename_team(&conn, args),
         Commands::Context(args) => cmd_context(&conn, args),
         Commands::Run(args) => cmd_run(&conn, args),
+        Commands::Delegate(args) => cmd_delegate(&conn, args),
         Commands::Status(args) => cmd_status(&conn, args),
         Commands::Logs(args) => cmd_logs(&conn, args),
         Commands::Result(args) => cmd_result(&conn, args),
@@ -1242,23 +1271,118 @@ fn cmd_context_list(conn: &Connection, args: JsonArgs) -> Result<()> {
 fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
     let sender = resolve_identity(conn, args.as_agent.as_deref(), None, None)?;
     let target = agent_by_name(conn, &sender.team_id, &args.agent)?;
-    let tx = conn.unchecked_transaction()?;
-    let context_id = if let Some(context_id) = args.context {
-        Some(context_id)
-    } else if args.git_diff || args.file.is_some() {
-        let created = create_context(&tx, &sender, args.subject.as_deref())?;
-        add_context_inputs(
-            &tx,
-            &created,
-            ContextInputSpec {
+    let job_id = create_run_job(
+        conn,
+        &sender,
+        &target,
+        RunJobSpec {
+            task: &args.task,
+            context_id: args.context.as_deref(),
+            context_inputs: Some(ContextInputSpec {
                 text: None,
                 stdin: false,
                 file: args.file.as_deref(),
                 files: &[],
                 git_diff: args.git_diff,
                 cmd: None,
-            },
-        )?;
+            }),
+            subject: args.subject.as_deref(),
+            timeout: args.timeout,
+            retry_of_job_id: args.retry_of_job_id.as_deref(),
+        },
+    )?;
+    spawn_worker(&job_id)?;
+    if args.json {
+        print_json(json!({"ok": true, "job_id": job_id}));
+    } else {
+        println!("job {job_id}");
+    }
+    Ok(())
+}
+
+fn cmd_delegate(conn: &Connection, args: DelegateArgs) -> Result<()> {
+    let sender = resolve_identity(conn, args.as_agent.as_deref(), None, None)?;
+    let target = agent_by_name(conn, &sender.team_id, &args.agent)?;
+    let task = match (args.task.as_deref(), target.runtime.as_str()) {
+        (Some(task), _) => task,
+        (None, "shell") => {
+            bail!("invalid_arguments: --task is required when delegating to a shell runtime");
+        }
+        (None, _) => "Complete the delegated task using the attached context.",
+    };
+    let job_id = create_run_job(
+        conn,
+        &sender,
+        &target,
+        RunJobSpec {
+            task,
+            context_id: args.context.as_deref(),
+            context_inputs: Some(ContextInputSpec {
+                text: None,
+                stdin: args.stdin,
+                file: args.file.as_deref(),
+                files: &[],
+                git_diff: args.git_diff,
+                cmd: None,
+            }),
+            subject: args.subject.as_deref(),
+            timeout: args.timeout,
+            retry_of_job_id: None,
+        },
+    )?;
+    spawn_worker(&job_id)?;
+    if args.wait {
+        let result = wait_for_job_result(conn, &job_id)?;
+        if args.json {
+            print_json(json!({"ok": true, "job_id": job_id, "result": result}));
+        } else {
+            println!("{}", result["body"].as_str().unwrap_or_default());
+        }
+    } else if args.json {
+        print_json(json!({"ok": true, "job_id": job_id}));
+    } else {
+        println!("job {job_id}");
+    }
+    Ok(())
+}
+
+struct RunJobSpec<'a> {
+    task: &'a str,
+    context_id: Option<&'a str>,
+    context_inputs: Option<ContextInputSpec<'a>>,
+    subject: Option<&'a str>,
+    timeout: Option<u64>,
+    retry_of_job_id: Option<&'a str>,
+}
+
+fn create_run_job(
+    conn: &Connection,
+    sender: &Identity,
+    target: &AgentRef,
+    spec: RunJobSpec<'_>,
+) -> Result<String> {
+    if spec.context_id.is_some()
+        && spec
+            .context_inputs
+            .as_ref()
+            .is_some_and(ContextInputSpec::has_inputs)
+    {
+        bail!("invalid_arguments: use either --context or context capture flags, not both");
+    }
+    let captured_context_items = if spec.context_id.is_none() {
+        spec.context_inputs
+            .filter(ContextInputSpec::has_inputs)
+            .map(capture_context_inputs)
+            .transpose()?
+    } else {
+        None
+    };
+    let tx = conn.unchecked_transaction()?;
+    let context_id = if let Some(context_id) = spec.context_id {
+        Some(context_id.to_string())
+    } else if let Some(items) = captured_context_items {
+        let created = create_context(&tx, sender, spec.subject)?;
+        persist_context_items(&tx, &created, &items)?;
         Some(created)
     } else {
         None
@@ -1266,14 +1390,14 @@ fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
     let task_message_id = create_message_in_tx(
         &tx,
         NewMessage {
-            sender: &sender,
+            sender,
             recipient_agent_id: &target.agent_id,
             thread_id: None,
             kind: "task",
             context_id: context_id.as_deref(),
             job_id: None,
-            subject: args.subject.as_deref(),
-            body: &args.task,
+            subject: spec.subject,
+            body: spec.task,
         },
     )?;
     let thread_id = message_thread(&tx, &task_message_id)?;
@@ -1290,8 +1414,8 @@ fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
             sender.agent_id,
             target.agent_id,
             target.runtime,
-            args.retry_of_job_id,
-            args.timeout.map(|value| value as i64),
+            spec.retry_of_job_id,
+            spec.timeout.map(|value| value as i64),
             now()
         ],
     )?;
@@ -1308,13 +1432,29 @@ fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
         json!({"job_id": job_id}),
     )?;
     tx.commit()?;
-    spawn_worker(&job_id)?;
-    if args.json {
-        print_json(json!({"ok": true, "job_id": job_id}));
-    } else {
-        println!("job {job_id}");
+    Ok(job_id)
+}
+
+fn wait_for_job_result(conn: &Connection, job_id: &str) -> Result<serde_json::Value> {
+    loop {
+        let job = job_json(conn, job_id)?.ok_or_else(|| anyhow!("unknown job: {job_id}"))?;
+        let state = job["state"].as_str().unwrap_or_default();
+        if state == "succeeded" {
+            let message_id = job["result_message_id"]
+                .as_str()
+                .ok_or_else(|| anyhow!("job_succeeded_without_result: {job_id}"))?;
+            return message_json(conn, message_id)?
+                .ok_or_else(|| anyhow!("missing result message: {message_id}"));
+        }
+        if is_terminal_job_state(state) {
+            let failure = job["failure_message"]
+                .as_str()
+                .or_else(|| job["failure_code"].as_str())
+                .unwrap_or("job finished without a result");
+            bail!("delegate_failed: {state}: {failure}");
+        }
+        thread::sleep(Duration::from_millis(200));
     }
-    Ok(())
 }
 
 fn cmd_status(conn: &Connection, args: StatusArgs) -> Result<()> {
@@ -1468,8 +1608,8 @@ fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
         .map(|context_id| context_plaintext(conn, context_id))
         .transpose()?
         .unwrap_or_default();
-    let command = adapter_command(&job.runtime, &job.target_agent_name, &task_body);
-    let Some(command) = command else {
+    let adapter = adapter_command(&job.runtime, &job.target_agent_name, &task_body);
+    let Some(adapter) = adapter else {
         set_job_state(
             conn,
             job_id,
@@ -1483,11 +1623,18 @@ fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
         return Ok(());
     };
     set_job_state(conn, job_id, "running", None, None)?;
-    append_log(conn, job_id, "adapter", &format!("running: {command}"))?;
-    let mut child = shell_command(&command)
+    let prompt = agent_prompt(&task_body, &context_text);
+    append_log(
+        conn,
+        job_id,
+        "adapter",
+        &format!("running: {}", adapter.command),
+    )?;
+    let mut child = shell_command(&adapter.command)
         .env("HANDOFF_JOB_ID", job_id)
         .env("HANDOFF_TASK", &task_body)
         .env("HANDOFF_CONTEXT", &context_text)
+        .env("HANDOFF_PROMPT", &prompt)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1526,7 +1673,7 @@ fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
         let result_body = if stdout.trim().is_empty() {
             "Task completed with no output.".to_string()
         } else {
-            stdout
+            adapter_result_body(&adapter, &stdout)
         };
         let target_identity = Identity {
             team_id: job.team_id.clone(),
@@ -2163,44 +2310,61 @@ struct ContextInputSpec<'a> {
     cmd: Option<&'a str>,
 }
 
+impl ContextInputSpec<'_> {
+    fn has_inputs(&self) -> bool {
+        self.text.is_some()
+            || self.stdin
+            || self.file.is_some()
+            || !self.files.is_empty()
+            || self.git_diff
+            || self.cmd.is_some()
+    }
+}
+
 fn add_context_inputs(
     conn: &Connection,
     context_id: &str,
     inputs: ContextInputSpec<'_>,
 ) -> Result<()> {
-    let mut added = 0;
+    let items = capture_context_inputs(inputs)?;
+    persist_context_items(conn, context_id, &items)
+}
+
+#[derive(Debug)]
+struct CapturedContextItem {
+    kind: &'static str,
+    label: Option<String>,
+    source: Option<String>,
+    content: String,
+    metadata: Value,
+}
+
+fn capture_context_inputs(inputs: ContextInputSpec<'_>) -> Result<Vec<CapturedContextItem>> {
+    let mut items = Vec::new();
     if let Some(text) = inputs.text {
-        add_context_item(
-            conn,
-            context_id,
-            "text",
-            Some("text"),
-            None,
-            text,
-            json!({}),
-        )?;
-        added += 1;
+        items.push(CapturedContextItem {
+            kind: "text",
+            label: Some("text".to_string()),
+            source: None,
+            content: text.to_string(),
+            metadata: json!({}),
+        });
     }
     if inputs.stdin {
         let content = read_all_stdin()?;
-        add_context_item(
-            conn,
-            context_id,
-            "stdin",
-            Some("stdin"),
-            None,
-            &content,
-            json!({}),
-        )?;
-        added += 1;
+        items.push(CapturedContextItem {
+            kind: "stdin",
+            label: Some("stdin".to_string()),
+            source: None,
+            content,
+            metadata: json!({}),
+        });
     }
     if let Some(file) = inputs.file {
-        add_file_context(conn, context_id, file)?;
-        added += 1;
+        items.push(capture_file_context(file)?);
     }
     for file in inputs.files {
-        add_file_context(conn, context_id, file)?;
-        added += 1;
+        items.push(capture_file_context(file)?);
     }
     if inputs.git_diff {
         let output = Command::new("git")
@@ -2209,16 +2373,13 @@ fn add_context_inputs(
             .or_else(|_| Command::new("git").args(["diff", "--no-ext-diff"]).output())
             .context("capture git diff")?;
         let content = String::from_utf8_lossy(&output.stdout).to_string();
-        add_context_item(
-            conn,
-            context_id,
-            "git_diff",
-            Some("git diff"),
-            Some("git diff --no-ext-diff HEAD"),
-            &content,
-            json!({"status": output.status.code()}),
-        )?;
-        added += 1;
+        items.push(CapturedContextItem {
+            kind: "git_diff",
+            label: Some("git diff".to_string()),
+            source: Some("git diff --no-ext-diff HEAD".to_string()),
+            content,
+            metadata: json!({"status": output.status.code()}),
+        });
     }
     if let Some(cmd) = inputs.cmd {
         let output = shell_command(cmd)
@@ -2227,38 +2388,55 @@ fn add_context_inputs(
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let content = format!("$ {cmd}\n\n[stdout]\n{stdout}\n[stderr]\n{stderr}");
-        add_context_item(
-            conn,
-            context_id,
-            "command_output",
-            Some(cmd),
-            Some(cmd),
-            &content,
-            json!({"status": output.status.code()}),
-        )?;
-        added += 1;
+        items.push(CapturedContextItem {
+            kind: "command_output",
+            label: Some(cmd.to_string()),
+            source: Some(cmd.to_string()),
+            content,
+            metadata: json!({"status": output.status.code()}),
+        });
     }
-    if added == 0 {
+    if items.is_empty() {
         bail!(
             "context_capture_failed: provide --text, --stdin, --file, --files, --git-diff, or --cmd"
         );
     }
+    Ok(items)
+}
+
+fn persist_context_items(
+    conn: &Connection,
+    context_id: &str,
+    items: &[CapturedContextItem],
+) -> Result<()> {
+    for item in items {
+        add_context_item(
+            conn,
+            context_id,
+            item.kind,
+            item.label.as_deref(),
+            item.source.as_deref(),
+            &item.content,
+            item.metadata.clone(),
+        )?;
+    }
     Ok(())
 }
 
-fn add_file_context(conn: &Connection, context_id: &str, file: &Path) -> Result<()> {
+fn capture_file_context(file: &Path) -> Result<CapturedContextItem> {
     let content =
         fs::read_to_string(file).with_context(|| format!("read file {}", file.display()))?;
     let metadata = fs::metadata(file)?;
-    add_context_item(
-        conn,
-        context_id,
-        "file",
-        file.file_name().and_then(|name| name.to_str()),
-        Some(&file.display().to_string()),
-        &content,
-        json!({"path": file.display().to_string(), "size": metadata.len()}),
-    )
+    Ok(CapturedContextItem {
+        kind: "file",
+        label: file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned),
+        source: Some(file.display().to_string()),
+        content,
+        metadata: json!({"path": file.display().to_string(), "size": metadata.len()}),
+    })
 }
 
 fn add_context_item(
@@ -2593,19 +2771,153 @@ fn append_event(
     Ok(())
 }
 
-fn adapter_command(runtime: &str, agent_name: &str, task: &str) -> Option<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdapterKind {
+    Shell,
+    BuiltInJson,
+    CodexJson,
+}
+
+#[derive(Debug)]
+struct AdapterCommand {
+    command: String,
+    kind: AdapterKind,
+}
+
+fn adapter_command(runtime: &str, agent_name: &str, task: &str) -> Option<AdapterCommand> {
     let agent_key = format!("HANDOFF_AGENT_CMD_{}", env_key(agent_name));
     if let Ok(command) = env::var(agent_key) {
-        return Some(command);
+        return Some(AdapterCommand {
+            command,
+            kind: AdapterKind::Shell,
+        });
     }
     let runtime_key = format!("HANDOFF_RUNTIME_CMD_{}", env_key(runtime));
     if let Ok(command) = env::var(runtime_key) {
-        return Some(command);
+        return Some(AdapterCommand {
+            command,
+            kind: AdapterKind::Shell,
+        });
     }
-    if runtime == "shell" {
-        return Some(task.to_string());
+    match runtime {
+        "shell" => Some(AdapterCommand {
+            command: task.to_string(),
+            kind: AdapterKind::Shell,
+        }),
+        "claude-code" => Some(AdapterCommand {
+            command: r#"claude -p "$HANDOFF_PROMPT" --output-format json"#.to_string(),
+            kind: AdapterKind::BuiltInJson,
+        }),
+        "codex" => Some(AdapterCommand {
+            command: r#"codex exec "$HANDOFF_PROMPT" --json"#.to_string(),
+            kind: AdapterKind::CodexJson,
+        }),
+        _ => None,
+    }
+}
+
+fn agent_prompt(task: &str, context: &str) -> String {
+    if context.trim().is_empty() {
+        task.to_string()
+    } else {
+        format!(
+            "{task}\n\nContext follows. Use it as the authoritative input for this task.\n{context}"
+        )
+    }
+}
+
+fn adapter_result_body(adapter: &AdapterCommand, stdout: &str) -> String {
+    if matches!(
+        adapter.kind,
+        AdapterKind::BuiltInJson | AdapterKind::CodexJson
+    ) {
+        extract_json_result_text(stdout).unwrap_or_else(|| stdout.to_string())
+    } else {
+        stdout.to_string()
+    }
+}
+
+fn extract_json_result_text(stdout: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<Value>(stdout)
+        && let Some(text) = extract_json_text_field(&value)
+    {
+        return Some(text);
+    }
+    let parsed_lines = stdout
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    parsed_lines
+        .iter()
+        .find_map(extract_agent_message_text)
+        .or_else(|| {
+            parsed_lines
+                .iter()
+                .find(|value| !looks_like_codex_event(value))
+                .and_then(extract_json_text_field)
+        })
+}
+
+fn extract_agent_message_text(value: &Value) -> Option<String> {
+    let item = value.get("item").unwrap_or(value);
+    if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+        return extract_json_text_field(item);
     }
     None
+}
+
+fn looks_like_codex_event(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|event_type| event_type.contains('.'))
+        || value.get("item").is_some()
+}
+
+fn extract_json_text_field(value: &Value) -> Option<String> {
+    const TEXT_FIELDS: &[&str] = &[
+        "result",
+        "text",
+        "message",
+        "output",
+        "answer",
+        "final_answer",
+        "content",
+    ];
+    match value {
+        Value::Object(map) => {
+            let mut preferred = Vec::new();
+            for field in TEXT_FIELDS {
+                if let Some(value) = map.get(*field) {
+                    if let Some(text) = value.as_str().filter(|text| !text.trim().is_empty()) {
+                        preferred.push(text.to_string());
+                    } else if let Some(text) = extract_json_text_field(value) {
+                        preferred.push(text);
+                    }
+                }
+            }
+            if !preferred.is_empty() {
+                return Some(preferred.join("\n"));
+            }
+            collect_json_text_fragments(map.values()).map(|items| items.join("\n"))
+        }
+        Value::Array(items) => {
+            collect_json_text_fragments(items.iter()).map(|items| items.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+fn collect_json_text_fragments<'a>(
+    values: impl IntoIterator<Item = &'a Value>,
+) -> Option<Vec<String>> {
+    let items = values
+        .into_iter()
+        .filter_map(extract_json_text_field)
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>();
+    if items.is_empty() { None } else { Some(items) }
 }
 
 fn spawn_worker(job_id: &str) -> Result<()> {
@@ -3132,10 +3444,115 @@ mod tests {
         .unwrap();
         let identity = resolve_identity(&conn, Some("alice"), None, None).unwrap();
         let context_id = create_context(&conn, &identity, Some("test")).unwrap();
-        add_file_context(&conn, &context_id, tmp.path()).unwrap();
+        let item = capture_file_context(tmp.path()).unwrap();
+        persist_context_items(&conn, &context_id, &[item]).unwrap();
         let context = context_json(&conn, &context_id).unwrap();
         assert_eq!(context["items"][0]["kind"], "file");
         assert!(context["items"][0]["content_hash"].as_str().unwrap().len() > 20);
+    }
+
+    #[test]
+    fn agent_prompt_appends_context() {
+        let prompt = agent_prompt("Review this diff.", "--- git_diff ---\n+change");
+        assert!(prompt.starts_with("Review this diff."));
+        assert!(prompt.contains("Context follows."));
+        assert!(prompt.contains("+change"));
+    }
+
+    #[test]
+    fn json_adapter_result_extracts_nested_text() {
+        let stdout = r#"{"event":"done","result":{"message":{"content":[{"type":"text","text":"review complete"}]}}}"#;
+        assert_eq!(
+            extract_json_result_text(stdout).as_deref(),
+            Some("review complete")
+        );
+        let jsonl = "{\"event\":\"start\"}\n{\"output\":\"final text\"}\n";
+        assert_eq!(
+            extract_json_result_text(jsonl).as_deref(),
+            Some("final text")
+        );
+    }
+
+    #[test]
+    fn json_adapter_result_prefers_codex_agent_message_jsonl() {
+        let jsonl = concat!(
+            r#"{"type":"item.completed","item":{"type":"agent_message","content":[{"type":"text","text":"final answer"}]}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"tool_result","message":"warning payload"}}"#,
+            "\n",
+            r#"{"type":"turn.completed"}"#,
+            "\n",
+        );
+        assert_eq!(
+            extract_json_result_text(jsonl).as_deref(),
+            Some("final answer")
+        );
+    }
+
+    #[test]
+    fn json_adapter_result_ignores_codex_non_answer_jsonl() {
+        let jsonl = concat!(
+            r#"{"type":"item.completed","item":{"type":"tool_result","message":"warning payload"}}"#,
+            "\n",
+            r#"{"type":"turn.completed"}"#,
+            "\n",
+        );
+        assert_eq!(extract_json_result_text(jsonl), None);
+    }
+
+    #[test]
+    fn json_adapter_result_joins_multipart_content() {
+        let stdout =
+            r#"{"content":[{"type":"text","text":"part 1"},{"type":"text","text":"part 2"}]}"#;
+        assert_eq!(
+            extract_json_result_text(stdout).as_deref(),
+            Some("part 1\npart 2")
+        );
+    }
+
+    #[test]
+    fn shell_delegate_requires_task() {
+        let (_dir, conn) = test_conn();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "lead".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_join(
+            &conn,
+            JoinArgs {
+                team: "team".into(),
+                agent: "reviewer".into(),
+                runtime: Some(Runtime::Shell),
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        let err = cmd_delegate(
+            &conn,
+            DelegateArgs {
+                agent: "reviewer".into(),
+                task: None,
+                context: None,
+                git_diff: false,
+                stdin: false,
+                file: None,
+                timeout: None,
+                wait: false,
+                as_agent: Some("lead".into()),
+                subject: None,
+                json: false,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--task is required"));
     }
 
     #[test]

@@ -88,6 +88,24 @@ try {
   if (inbox.messages.length !== 1 || inbox.messages[0].body !== "MCP smoke message") {
     throw new Error(`unexpected inbox result: ${JSON.stringify(inbox)}`);
   }
+
+  const delegated = parseToolJson(
+    await client.callTool({
+      name: "handoff_delegate",
+      arguments: {
+        agent: "reviewer",
+        asAgent: "lead",
+        task: 'printf "mcp delegated: %s\\n" "$HANDOFF_TASK"',
+        wait: true,
+        timeout: 5,
+        project,
+      },
+    }),
+  );
+
+  if (!delegated.result?.body?.includes("mcp delegated:")) {
+    throw new Error(`unexpected delegate result: ${JSON.stringify(delegated)}`);
+  }
 } finally {
   await client.close();
 }

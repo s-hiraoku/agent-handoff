@@ -54,6 +54,7 @@ Tool results preserve the CLI JSON text for compatibility and also expose the pa
 - `handoff_history`
 - `handoff_show`
 - `handoff_run`
+- `handoff_delegate`
 - `handoff_status`
 - `handoff_logs`
 - `handoff_result`
@@ -62,7 +63,7 @@ Tool results preserve the CLI JSON text for compatibility and also expose the pa
 
 ## Trust Boundary
 
-This server wraps a local CLI and inherits its execution behavior. `handoff_run`, `handoff_context_create` with `command`, and configured adapter commands may execute local shell commands through `HANDOFF_BIN`. Run the MCP server only for trusted clients and trusted projects; do not expose it as a network service for untrusted users.
+This server wraps a local CLI and inherits its execution behavior. `handoff_run`, `handoff_delegate`, `handoff_context_create` with `command`, built-in runtime adapters, and configured adapter commands may execute local commands through `HANDOFF_BIN`. Run the MCP server only for trusted clients and trusted projects; do not expose it as a network service for untrusted users.
 
 ## Test
 
@@ -72,4 +73,4 @@ From the repository root:
 ./scripts/test-mcp.sh
 ```
 
-The smoke test starts the MCP server with an isolated `HANDOFF_HOME`, calls tools through the MCP SDK, and verifies context creation, sending, and inbox reads.
+The smoke test starts the MCP server with an isolated `HANDOFF_HOME`, calls tools through the MCP SDK, and verifies context creation, sending, inbox reads, and synchronous delegation.

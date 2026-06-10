@@ -91,6 +91,13 @@ reference_search: true
             <td>Job id, or JSON with <code>job_id</code>.</td>
             <td>Run <code>handoff status &lt;job-id&gt;</code>.</td>
           </tr>
+          <tr tabindex="0" data-command-row data-category="jobs" data-command="handoff delegate wait stdin git-diff" data-use="Delegate work and optionally wait for the result." data-recovery="Use status and logs with the returned job id if waiting fails.">
+            <td><code>handoff delegate &lt;agent&gt; --task &lt;text&gt; --wait</code></td>
+            <td>Create context, queue the job, wait for completion, and print the result.</td>
+            <td><code>--stdin</code> <code>--context</code> <code>--git-diff</code> <code>--file</code> <code>--timeout</code></td>
+            <td>Result body by default, or JSON with <code>job_id</code> and <code>result</code>.</td>
+            <td>Run <code>handoff logs &lt;job-id&gt;</code> for adapter output.</td>
+          </tr>
           <tr tabindex="0" data-command-row data-category="jobs" data-command="handoff status job" data-use="Read human job status." data-recovery="For blocked jobs configure adapter env vars and retry.">
             <td><code>handoff status &lt;job-id&gt;</code></td>
             <td>Show route, state, result, failure, and next action.</td>
@@ -112,9 +119,9 @@ reference_search: true
             <td>MCP tools operate against the intended repo.</td>
             <td>Pass <code>project</code> per tool for multi-repo hosts.</td>
           </tr>
-          <tr tabindex="0" data-command-row data-category="mcp" data-command="handoff_context_file handoff_reply" data-use="Use expanded MCP tools for practical workflows." data-recovery="Fallback to CLI commands when host auth or tool configuration is incomplete.">
+          <tr tabindex="0" data-command-row data-category="mcp" data-command="handoff_context_file handoff_reply handoff_delegate" data-use="Use expanded MCP tools for practical workflows." data-recovery="Fallback to CLI commands when host auth or tool configuration is incomplete.">
             <td><code>handoff_context_file</code></td>
-            <td>Create context from a file through MCP.</td>
+            <td>Create context from a file or call <code>handoff_delegate</code> through MCP.</td>
             <td><code>file</code> <code>title</code> <code>asAgent</code> <code>project</code></td>
             <td>Text result containing CLI JSON plus matching MCP structured content.</td>
             <td>Use CLI <code>handoff context create --file</code> as fallback.</td>

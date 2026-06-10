@@ -170,7 +170,9 @@ handoff to reviewer --context "$CTX" --message "Use this diff."</code></pre>
           <span class="step-index">5</span>
           <div>
             <h3>Run background work</h3>
-            <p>Shell runtime executes the task text. Other runtimes need adapter commands.</p>
+            <p>Use <code>delegate --wait</code> when the caller needs the result immediately. Use <code>run</code> when background execution is enough.</p>
+            <pre class="command-block"><code>git diff | handoff delegate reviewer --stdin --task "Review this diff" --wait</code></pre>
+            <p>Shell runtime executes the task text. <code>claude-code</code> and <code>codex</code> have built-in adapters; other runtimes need adapter commands.</p>
             <pre class="command-block"><code>handoff run reviewer --task 'echo reviewed: "$HANDOFF_TASK"' --context "$CTX"
 handoff status &lt;job-id&gt;
 handoff logs &lt;job-id&gt; --follow
@@ -192,7 +194,7 @@ handoff retry &lt;job-id&gt;</code></pre>
     <aside class="side-stack">
       <div class="note-panel">
         <strong>Adapter environment</strong>
-        <p>Jobs receive <code>HANDOFF_JOB_ID</code>, <code>HANDOFF_TASK</code>, and <code>HANDOFF_CONTEXT</code>.</p>
+        <p>Jobs receive <code>HANDOFF_JOB_ID</code>, <code>HANDOFF_TASK</code>, <code>HANDOFF_CONTEXT</code>, and <code>HANDOFF_PROMPT</code>.</p>
       </div>
       <div class="note-panel">
         <strong>Trust boundary</strong>

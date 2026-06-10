@@ -110,9 +110,15 @@ handoff logs <job-id> --follow
 handoff result <job-id>
 ```
 
+Delegate and wait for a result in one command:
+
+```sh
+git diff | handoff delegate reviewer --stdin --task "Review this diff" --wait
+```
+
 `handoff status <job-id>` prints a short human-readable summary by default. `handoff logs --follow` streams new adapter/stdout/stderr log lines until the job reaches a terminal state. Use `--json` when scripting.
 
-For `shell` runtime, the task text is executed by the shell. For other runtimes, set an adapter command:
+For `shell` runtime, the task text is executed by the shell. `claude-code` and `codex` have built-in adapters that call `claude -p "$HANDOFF_PROMPT" --output-format json` and `codex exec "$HANDOFF_PROMPT" --json`. For other runtimes, or to override any built-in adapter, set an adapter command:
 
 ```sh
 export HANDOFF_AGENT_CMD_REVIEWER='my-reviewer-agent --task "$HANDOFF_TASK"'
@@ -125,6 +131,7 @@ The spawned process receives:
 HANDOFF_JOB_ID
 HANDOFF_TASK
 HANDOFF_CONTEXT
+HANDOFF_PROMPT
 ```
 
 ## Core Commands
@@ -172,6 +179,8 @@ Jobs:
 ```sh
 handoff run <agent> --task <text>
 handoff run <agent> --task <text> --timeout 30
+handoff delegate <agent> --task <text> --wait
+handoff delegate <agent> --stdin --task <text> --wait
 handoff status [job-id]
 handoff logs <job-id>
 handoff logs <job-id> --follow
@@ -277,6 +286,7 @@ Example MCP config:
 `handoff` is a local execution tool, not a sandbox. Treat message text, context captures, adapter commands, and `--cmd` inputs as trusted local operator input:
 
 - `handoff run` executes shell tasks directly for `shell` runtime.
+- `handoff run` and `handoff delegate` may launch local runtime CLIs such as `claude` or `codex` for built-in runtimes.
 - `handoff context create --cmd` and adapter commands run through the local shell.
 - MCP clients can trigger the same local CLI behavior through the configured `HANDOFF_BIN`.
 - Do not expose the MCP server or adapter environment to untrusted users or unreviewed automated input.
@@ -331,7 +341,7 @@ Run only the MCP checks:
 Current release target:
 
 ```text
-v0.2.0
+v0.3.0
 ```
 
 Release checklist:
