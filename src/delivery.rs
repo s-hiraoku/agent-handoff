@@ -215,11 +215,18 @@ fn json_contains_handoff_command(value: &Value) -> bool {
 }
 
 fn is_handoff_hook_command(text: &str) -> bool {
-    text.contains("handoff")
-        && (text.contains("inbox") || text.contains("monitor"))
-        && (text.contains("--json")
-            || text.contains("--instruction")
-            || text.contains("agent-handoff"))
+    let inbox_hook = command_has_token(text, "inbox")
+        && command_has_token(text, "--json")
+        && command_has_token(text, "--project");
+    let monitor_hook = command_has_token(text, "monitor")
+        && command_has_token(text, "--instruction")
+        && command_has_token(text, "--runtime")
+        && command_has_token(text, "--project");
+    inbox_hook || monitor_hook
+}
+
+fn command_has_token(text: &str, token: &str) -> bool {
+    text.split_whitespace().any(|part| part == token)
 }
 
 fn inbox_hook_command(project: &str) -> Result<String> {

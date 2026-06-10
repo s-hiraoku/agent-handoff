@@ -7,10 +7,16 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const HANDOFF_BIN = process.env.HANDOFF_BIN || "handoff";
+const DEFAULT_HANDOFF_TIMEOUT_MS = 30000;
 const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 function projectCwd(project) {
   return path.resolve(project || process.env.HANDOFF_PROJECT || process.cwd());
+}
+
+function handoffTimeoutMs() {
+  const timeoutMs = Number(process.env.HANDOFF_MCP_TIMEOUT_MS || DEFAULT_HANDOFF_TIMEOUT_MS);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_HANDOFF_TIMEOUT_MS;
 }
 
 function runHandoff(args, input, project) {
@@ -20,9 +26,30 @@ function runHandoff(args, input, project) {
       env: process.env,
       cwd: projectCwd(project)
     });
+    const timeoutMs = handoffTimeoutMs();
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let timer;
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      const timeoutMessage = `handoff timed out after ${timeoutMs}ms`;
+      finish({
+        ok: false,
+        stdout,
+        stderr: stderr ? `${stderr}\n${timeoutMessage}` : timeoutMessage,
+        code: -2
+      });
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -31,10 +58,10 @@ function runHandoff(args, input, project) {
       stderr += chunk.toString();
     });
     child.on("error", (error) => {
-      resolve({ ok: false, stdout, stderr: String(error), code: -1 });
+      finish({ ok: false, stdout, stderr: String(error), code: -1 });
     });
     child.on("close", (code) => {
-      resolve({ ok: code === 0, stdout, stderr, code });
+      finish({ ok: code === 0, stdout, stderr, code });
     });
 
     if (input) {

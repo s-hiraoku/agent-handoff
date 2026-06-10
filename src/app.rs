@@ -3451,6 +3451,36 @@ mod tests {
     }
 
     #[test]
+    fn mode_off_removes_generated_hook_without_handoff_binary_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_path_buf();
+        let hook_path = project.join(".codex/hooks.json");
+        fs::create_dir_all(hook_path.parent().unwrap()).unwrap();
+        fs::write(
+            &hook_path,
+            format!(
+                r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command","command":"'/tmp/bin/agent' inbox --json --project '{}'"}}]}}]}}}}"#,
+                project.display()
+            ),
+        )
+        .unwrap();
+        let (_db_dir, conn) = test_conn();
+
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Off),
+                runtime: Some(Runtime::Codex),
+                project: Some(project),
+                json: false,
+            },
+        )
+        .unwrap();
+
+        assert!(!hook_path.exists());
+    }
+
+    #[test]
     fn mode_monitor_writes_claude_session_start_hook() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_path_buf();
