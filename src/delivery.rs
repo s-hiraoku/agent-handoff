@@ -218,11 +218,14 @@ fn is_handoff_hook_command(text: &str) -> bool {
     let inbox_hook = command_has_token(text, "inbox")
         && command_has_token(text, "--json")
         && command_has_token(text, "--project");
+    let notify_hook = command_has_token(text, "notify")
+        && command_has_token(text, "--json")
+        && command_has_token(text, "--project");
     let monitor_hook = command_has_token(text, "monitor")
         && command_has_token(text, "--instruction")
         && command_has_token(text, "--runtime")
         && command_has_token(text, "--project");
-    inbox_hook || monitor_hook
+    inbox_hook || notify_hook || monitor_hook
 }
 
 fn command_has_token(text: &str, token: &str) -> bool {
@@ -232,7 +235,7 @@ fn command_has_token(text: &str, token: &str) -> bool {
 fn inbox_hook_command(project: &str) -> Result<String> {
     let exe = env::current_exe()?;
     Ok(format!(
-        "'{}' inbox --json --project '{}'",
+        "'{}' notify --json --project '{}'",
         shell_quote(&exe.display().to_string()),
         shell_quote(project)
     ))

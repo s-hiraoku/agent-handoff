@@ -3,8 +3,10 @@
 本ドキュメントは、現状の MVP(v0.2.0 時点)が「実用レベルで使えない」と感じられる根本原因を分析し、
 実用化に必要な機能仕様を優先度順に定義する。
 
-> 実装状況: v0.3.0 で P0-1 の `claude-code` / `codex` ビルトイン adapter と、
-> P0-2 の `handoff delegate` 同期委譲を実装済み。P1 以降は引き続きロードマップ項目。
+> 実装状況: v0.3.0 で P0-1/P0-2 を実装済み。この変更で P1-1 の
+> profile/session 分離、P1-2 の daemon/notify 配信、P2-1 の `handoff setup`
+> の実用スライスを実装した。旧 `join` / `actas` / `drop` / `rename-team` は
+> 公開 CLI から削除済み。
 
 ## 1. 現状分析:なぜ実用的に使えないか
 

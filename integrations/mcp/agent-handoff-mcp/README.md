@@ -24,6 +24,8 @@ HANDOFF_PROJECT=/absolute/path/to/project npm start
 
 Each tool also accepts an optional `project` argument. Tool-level `project` takes precedence over `HANDOFF_PROJECT`; otherwise the server uses its current working directory.
 
+The wrapped CLI infers the sending session from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, or a project-local fallback session. `handoff_inbox` also accepts `sessionId` to read a specific live session. Message tools address sessions or aliases; `handoff_run` and `handoff_delegate` target delegation profiles.
+
 Tool results preserve the CLI JSON text for compatibility and also expose the parsed JSON as MCP `structuredContent` when the wrapped CLI command emits JSON.
 
 ## MCP Config

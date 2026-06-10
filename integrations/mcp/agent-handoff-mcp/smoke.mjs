@@ -78,7 +78,7 @@ try {
     await client.callTool({
       name: "handoff_inbox",
       arguments: {
-        asAgent: "reviewer",
+        sessionId: "reviewer-session",
         peek: true,
         project,
       },

@@ -47,12 +47,12 @@ description: Practical setup and daily workflow guide for agent-handoff.
           <code>cargo install --path .</code>
         </div>
         <div class="runbook-row">
-          <span>join</span>
-          <code>handoff join demo lead --runtime shell</code>
+          <span>session</span>
+          <code>handoff session alias lead</code>
         </div>
         <div class="runbook-row">
-          <span>act as</span>
-          <code>handoff actas lead</code>
+          <span>profile</span>
+          <code>handoff profile create reviewer --runtime shell</code>
         </div>
         <div class="runbook-row">
           <span>peek</span>
@@ -69,11 +69,11 @@ description: Practical setup and daily workflow guide for agent-handoff.
     <div class="flow-strip">
       <div class="flow-step">
         <span>1</span>
-        <strong>Join</strong>
+        <strong>Alias Session</strong>
       </div>
       <div class="flow-step">
         <span>2</span>
-        <strong>Act as</strong>
+        <strong>Create Profile</strong>
       </div>
       <div class="flow-step">
         <span>3</span>
@@ -103,20 +103,20 @@ description: Practical setup and daily workflow guide for agent-handoff.
         <article class="step-item">
           <span class="step-index">1</span>
           <div>
-            <h3>Create identities</h3>
-            <p>Register the roles that will exchange messages inside this project.</p>
+            <h3>Create sessions and profiles</h3>
+            <p>Give live sessions readable aliases and create profiles for delegated work.</p>
             <pre class="command-block"><code>handoff init
-handoff join demo lead --runtime shell
-handoff join demo reviewer --runtime shell</code></pre>
+handoff session alias lead
+HANDOFF_SESSION_ID=reviewer-session handoff session alias reviewer
+handoff profile create reviewer --runtime shell</code></pre>
           </div>
         </article>
         <article class="step-item">
           <span class="step-index">2</span>
           <div>
             <h3>Send work</h3>
-            <p>Select the sender, then send a concise request or attach context.</p>
-            <pre class="command-block"><code>handoff actas lead
-handoff to reviewer "Please review this change."</code></pre>
+            <p>The sender is the current session, so send directly to a session alias.</p>
+            <pre class="command-block"><code>handoff to reviewer "Please review this change."</code></pre>
           </div>
         </article>
         <article class="step-item">
@@ -124,8 +124,7 @@ handoff to reviewer "Please review this change."</code></pre>
           <div>
             <h3>Read safely</h3>
             <p>Preview messages before consuming unread state, then read normally when ready.</p>
-            <pre class="command-block"><code>handoff actas reviewer
-handoff inbox --peek
+            <pre class="command-block"><code>HANDOFF_SESSION_ID=reviewer-session handoff inbox --peek
 handoff inbox</code></pre>
           </div>
         </article>
@@ -134,8 +133,8 @@ handoff inbox</code></pre>
 
     <aside class="side-stack" aria-label="Operational notes">
       <div class="note-panel">
-        <strong>Active role</strong>
-        <p><code>handoff actas &lt;agent&gt;</code> claims a role lease when the host exposes a stable session id.</p>
+        <strong>Current session</strong>
+        <p><code>handoff session alias &lt;alias&gt;</code> gives the current live session a readable address.</p>
       </div>
       <div class="note-panel">
         <strong>JSON mode</strong>
@@ -236,7 +235,7 @@ handoff retry &lt;job-id&gt;</code></pre>
       </div>
       <div class="note-panel">
         <strong>Troubleshooting</strong>
-        <p><code>multiple_identities</code> means run <code>handoff actas &lt;agent&gt;</code> or pass <code>--as</code>.</p>
+        <p><code>unknown_session</code> means run <code>handoff sessions</code> or assign an alias with <code>handoff session alias &lt;alias&gt;</code>.</p>
       </div>
     </aside>
   </div>

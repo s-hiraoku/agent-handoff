@@ -1,6 +1,6 @@
 use crate::delivery::{apply_delivery_mode, print_monitor_instruction, validate_mode};
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -16,8 +16,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const DEFAULT_LIMIT: i64 = 50;
-const ROLE_LOCK_TTL_SECONDS: i64 = 12 * 60 * 60;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const TERMINAL_JOB_STATE_SQL: &str = "'succeeded','failed','cancelled','timeout','blocked'";
 
 #[derive(Parser, Debug)]
@@ -33,29 +32,27 @@ struct Cli {
 enum Commands {
     #[command(about = "Initialize local handoff storage")]
     Init,
-    #[command(about = "Register an agent identity for this project")]
-    Join(JoinArgs),
-    #[command(about = "List identities registered for this project")]
+    #[command(about = "Configure handoff for an agent host in this project")]
+    Setup(SetupArgs),
+    #[command(about = "Create, configure, and list delegation profiles")]
+    Profile(ProfileArgs),
+    #[command(about = "List live addressable sessions for this project")]
+    Sessions(ProjectArgs),
+    #[command(about = "Configure the current live session")]
+    Session(SessionArgs),
+    #[command(about = "Show the current session")]
     Whoami(ProjectArgs),
-    #[command(about = "Select the active agent identity for this project")]
-    Actas(AgentArg),
-    #[command(about = "Show the current active agent identity")]
+    #[command(about = "Show the current session")]
     Active(ProjectArgs),
-    #[command(about = "Remove an agent identity from this project")]
-    Drop(AgentArg),
-    #[command(about = "List agents in the active team")]
-    Agents(JsonArgs),
-    #[command(about = "List agents in the active team")]
-    Team(JsonArgs),
-    #[command(about = "Send a message to another agent")]
+    #[command(about = "Send a message to another live session")]
     Send(SendArgs),
-    #[command(about = "Send a message to another agent")]
+    #[command(about = "Send a message to another live session")]
     To(SendArgs),
     #[command(about = "Send a message using the peerpost-style alias")]
     Post(SendArgs),
     #[command(about = "Reply to an existing thread")]
     Reply(ReplyArgs),
-    #[command(about = "Read the active agent inbox")]
+    #[command(about = "Read the current session inbox")]
     Inbox(InboxArgs),
     #[command(about = "Show recent message history")]
     History(HistoryArgs),
@@ -63,17 +60,17 @@ enum Commands {
     Show(ShowArgs),
     #[command(about = "Configure project-local delivery hooks")]
     Mode(ModeArgs),
-    #[command(about = "Stream unread messages for an agent identity")]
+    #[command(about = "Write notification files for live sessions")]
+    Daemon(DaemonArgs),
+    #[command(about = "Consume the current session notification file")]
+    Notify(NotifyArgs),
+    #[command(about = "Stream unread messages for the current session")]
     Monitor(MonitorArgs),
-    #[command(about = "Remove the active identity from this project")]
-    Leave(LeaveArgs),
     #[command(about = "Remove all registrations for this project")]
     Reset(ProjectArgs),
-    #[command(about = "Rename a team")]
-    RenameTeam(RenameTeamArgs),
     #[command(about = "Create, show, and list context packages")]
     Context(ContextArgs),
-    #[command(about = "Start a background task for another agent")]
+    #[command(about = "Start a background task for a profile")]
     Run(RunArgs),
     #[command(about = "Delegate a task and optionally wait for the result")]
     Delegate(DelegateArgs),
@@ -108,13 +105,9 @@ struct ProjectArgs {
 }
 
 #[derive(Args, Debug)]
-struct JoinArgs {
-    #[arg(help = "Team name to join or create")]
-    team: String,
-    #[arg(help = "Agent identity name")]
-    agent: String,
-    #[arg(long, value_enum, help = "Runtime used by this agent identity")]
-    runtime: Option<Runtime>,
+struct SetupArgs {
+    #[arg(value_enum, help = "Host runtime to configure")]
+    runtime: Runtime,
     #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
     #[arg(long, help = "Print machine-readable JSON")]
@@ -122,24 +115,82 @@ struct JoinArgs {
 }
 
 #[derive(Args, Debug)]
-struct AgentArg {
-    #[arg(help = "Agent identity name")]
-    agent: String,
+struct ProfileArgs {
+    #[command(subcommand)]
+    command: ProfileCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ProfileCommand {
+    #[command(about = "Create or update a delegation profile")]
+    Create(ProfileCreateArgs),
+    #[command(about = "List delegation profiles for this project")]
+    List(ProjectArgs),
+    #[command(about = "Set profile options")]
+    Set(ProfileSetArgs),
+}
+
+#[derive(Args, Debug)]
+struct ProfileCreateArgs {
+    #[arg(help = "Profile name")]
+    name: String,
+    #[arg(long, value_enum, help = "Runtime used by this profile")]
+    runtime: Option<Runtime>,
+    #[arg(long, help = "Inline system prompt prepended to delegated tasks")]
+    prompt: Option<String>,
+    #[arg(long, help = "Read the system prompt from this file")]
+    prompt_file: Option<PathBuf>,
     #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
     #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
 
+#[derive(Args, Debug)]
+struct ProfileSetArgs {
+    #[arg(help = "Profile name")]
+    name: String,
+    #[arg(help = "Profile settings in key=value form")]
+    settings: Vec<String>,
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
+    #[arg(long, help = "Print machine-readable JSON")]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct SessionArgs {
+    #[command(subcommand)]
+    command: SessionCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionCommand {
+    #[command(about = "Assign an alias to the current session")]
+    Alias(SessionAliasArgs),
+}
+
+#[derive(Args, Debug)]
+struct SessionAliasArgs {
+    #[arg(help = "Alias for the current live session")]
+    alias: String,
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
+    #[arg(long, value_enum, help = "Runtime for the current session")]
+    runtime: Option<Runtime>,
+    #[arg(long, help = "Print machine-readable JSON")]
+    json: bool,
+}
+
 #[derive(Args, Debug, Clone)]
 struct SendArgs {
-    #[arg(help = "Recipient agent name")]
-    agent: String,
+    #[arg(help = "Recipient session id or alias")]
+    session: String,
     #[arg(help = "Message text. Omit when using --stdin, --file, or --message")]
     message: Vec<String>,
-    #[arg(long = "as", help = "Send as this agent identity")]
+    #[arg(long = "as", hide = true)]
     as_agent: Option<String>,
-    #[arg(long, help = "Use this team when multiple teams are registered")]
+    #[arg(long, hide = true)]
     team: Option<String>,
     #[arg(long, help = "Read message body from standard input")]
     stdin: bool,
@@ -181,7 +232,7 @@ struct ReplyArgs {
     thread_id: String,
     #[arg(help = "Reply text. Omit when using --stdin or --file")]
     message: Vec<String>,
-    #[arg(long = "as", help = "Reply as this agent identity")]
+    #[arg(long = "as", hide = true)]
     as_agent: Option<String>,
     #[arg(long, help = "Read reply body from standard input")]
     stdin: bool,
@@ -195,10 +246,12 @@ struct ReplyArgs {
 
 #[derive(Args, Debug)]
 struct InboxArgs {
-    #[arg(long = "as", help = "Read inbox for this agent identity")]
+    #[arg(long = "as", hide = true)]
     as_agent: Option<String>,
     #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
+    #[arg(long, help = "Read inbox for this session id")]
+    session_id: Option<String>,
     #[arg(long, help = "Read unread messages only")]
     unread: bool,
     #[arg(long, help = "Include already-read messages")]
@@ -217,7 +270,7 @@ struct InboxArgs {
 struct HistoryArgs {
     #[arg(long = "with", help = "Filter history to messages with this agent")]
     with_agent: Option<String>,
-    #[arg(long, help = "Use this team when multiple teams are registered")]
+    #[arg(long, hide = true)]
     team: Option<String>,
     #[arg(long, default_value_t = DEFAULT_LIMIT, help = "Maximum number of messages to show")]
     limit: i64,
@@ -246,8 +299,32 @@ struct ModeArgs {
 }
 
 #[derive(Args, Debug)]
+struct DaemonArgs {
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
+    #[arg(long, default_value_t = 2, help = "Polling interval in seconds")]
+    interval: u64,
+    #[arg(long, help = "Write notifications once and exit")]
+    once: bool,
+    #[arg(long, help = "Print machine-readable JSON lines")]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct NotifyArgs {
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
+    #[arg(long, value_enum, help = "Runtime for the current session")]
+    runtime: Option<Runtime>,
+    #[arg(long, help = "Stable session id")]
+    session_id: Option<String>,
+    #[arg(long, help = "Print machine-readable JSON")]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct MonitorArgs {
-    #[arg(long = "as", help = "Stream inbox for this agent identity")]
+    #[arg(long = "as", hide = true)]
     as_agent: Option<String>,
     #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
@@ -263,28 +340,6 @@ struct MonitorArgs {
     json: bool,
     #[arg(long, hide = true)]
     instruction: bool,
-}
-
-#[derive(Args, Debug)]
-struct LeaveArgs {
-    #[arg(long, help = "Leave this team when multiple teams are registered")]
-    team: Option<String>,
-    #[arg(long = "as", help = "Leave this agent identity")]
-    as_agent: Option<String>,
-    #[arg(long, help = "Print machine-readable JSON")]
-    json: bool,
-}
-
-#[derive(Args, Debug)]
-struct RenameTeamArgs {
-    #[arg(help = "Existing team name")]
-    old: String,
-    #[arg(help = "New team name")]
-    new: String,
-    #[arg(long, help = "Merge into an existing team name")]
-    merge: bool,
-    #[arg(long, help = "Print machine-readable JSON")]
-    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -316,7 +371,7 @@ struct ContextCreateArgs {
     git_diff: bool,
     #[arg(long, help = "Capture command output as context")]
     cmd: Option<String>,
-    #[arg(long = "as", help = "Create context as this agent identity")]
+    #[arg(long = "as", hide = true)]
     as_agent: Option<String>,
     #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
@@ -332,8 +387,8 @@ struct ContextShowArgs {
 
 #[derive(Args, Debug)]
 struct RunArgs {
-    #[arg(help = "Target agent name")]
-    agent: String,
+    #[arg(help = "Target profile name")]
+    profile: String,
     #[arg(long, help = "Task text or shell command for shell runtime")]
     task: String,
     #[arg(long, help = "Attach an existing context id")]
@@ -344,7 +399,7 @@ struct RunArgs {
     file: Option<PathBuf>,
     #[arg(long, help = "Timeout in seconds")]
     timeout: Option<u64>,
-    #[arg(long = "as", help = "Request the task as this agent identity")]
+    #[arg(long = "as", hide = true)]
     as_agent: Option<String>,
     #[arg(long, help = "Optional subject for the task thread")]
     subject: Option<String>,
@@ -356,8 +411,8 @@ struct RunArgs {
 
 #[derive(Args, Debug)]
 struct DelegateArgs {
-    #[arg(help = "Target agent name")]
-    agent: String,
+    #[arg(help = "Target profile name")]
+    profile: String,
     #[arg(long, help = "Task instructions for the target agent")]
     task: Option<String>,
     #[arg(long, help = "Attach an existing context id")]
@@ -372,7 +427,7 @@ struct DelegateArgs {
     timeout: Option<u64>,
     #[arg(long, help = "Wait for the job to finish and print the result")]
     wait: bool,
-    #[arg(long = "as", help = "Request the task as this agent identity")]
+    #[arg(long = "as", hide = true)]
     as_agent: Option<String>,
     #[arg(long, help = "Optional subject for the task thread")]
     subject: Option<String>,
@@ -509,6 +564,7 @@ fn run() -> Result<()> {
     match cli.command.unwrap_or(Commands::Inbox(InboxArgs {
         as_agent: None,
         project: None,
+        session_id: None,
         unread: true,
         all: false,
         peek: false,
@@ -517,12 +573,12 @@ fn run() -> Result<()> {
         json: false,
     })) {
         Commands::Init => cmd_init(&conn),
-        Commands::Join(args) => cmd_join(&conn, args),
+        Commands::Setup(args) => cmd_setup(&conn, args),
+        Commands::Profile(args) => cmd_profile(&conn, args),
+        Commands::Sessions(args) => cmd_sessions(&conn, args),
+        Commands::Session(args) => cmd_session(&conn, args),
         Commands::Whoami(args) => cmd_whoami(&conn, args),
-        Commands::Actas(args) => cmd_actas(&conn, args),
         Commands::Active(args) => cmd_active(&conn, args),
-        Commands::Drop(args) => cmd_drop(&conn, args),
-        Commands::Agents(args) | Commands::Team(args) => cmd_agents(&conn, args),
         Commands::Send(args) | Commands::To(args) | Commands::Post(args) => {
             cmd_send(&conn, args, "message")
         }
@@ -531,10 +587,10 @@ fn run() -> Result<()> {
         Commands::History(args) => cmd_history(&conn, args),
         Commands::Show(args) => cmd_show(&conn, args),
         Commands::Mode(args) => cmd_mode(&conn, args),
+        Commands::Daemon(args) => cmd_daemon(&conn, args),
+        Commands::Notify(args) => cmd_notify(&conn, args),
         Commands::Monitor(args) => cmd_monitor(&conn, args),
-        Commands::Leave(args) => cmd_leave(&conn, args),
         Commands::Reset(args) => cmd_reset(&conn, args),
-        Commands::RenameTeam(args) => cmd_rename_team(&conn, args),
         Commands::Context(args) => cmd_context(&conn, args),
         Commands::Run(args) => cmd_run(&conn, args),
         Commands::Delegate(args) => cmd_delegate(&conn, args),
@@ -617,6 +673,29 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
           created_at text not null,
           updated_at text not null,
           unique(team_id, agent_id, project_path, runtime)
+        );
+        create table if not exists profile_settings (
+          agent_id text primary key references agents(id) on delete cascade,
+          prompt text,
+          prompt_file text,
+          options_json text not null default '{}',
+          created_at text not null,
+          updated_at text not null
+        );
+        create table if not exists sessions (
+          id text primary key,
+          team_id text not null references teams(id) on delete cascade,
+          agent_id text not null references agents(id) on delete cascade,
+          project_path text not null,
+          session_key text not null,
+          alias text,
+          runtime text not null,
+          source text not null,
+          created_at text not null,
+          updated_at text not null,
+          last_seen_at text not null,
+          unique(project_path, session_key),
+          unique(project_path, alias)
         );
         create table if not exists threads (
           id text primary key,
@@ -711,6 +790,9 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
           created_at text not null
         );
         create index if not exists idx_project_registrations_project on project_registrations(project_path);
+        create index if not exists idx_sessions_project on sessions(project_path, updated_at);
+        create index if not exists idx_sessions_agent on sessions(agent_id);
+        create index if not exists idx_profile_settings_agent on profile_settings(agent_id);
         create index if not exists idx_messages_inbox_unread on messages(to_agent_id, created_at);
         create index if not exists idx_messages_thread on messages(thread_id, created_at);
         create index if not exists idx_messages_team_history on messages(team_id, created_at);
@@ -731,161 +813,210 @@ fn cmd_init(_conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn cmd_join(conn: &Connection, args: JoinArgs) -> Result<()> {
+fn cmd_setup(conn: &Connection, args: SetupArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let runtime = args.runtime.as_str();
+    let session = current_session(conn, &project, Some(runtime), None)?;
+    let mode = if runtime == "claude-code" {
+        "both"
+    } else {
+        "turn"
+    };
+    validate_mode(runtime, mode)?;
+    apply_delivery_mode(&project, runtime, mode)?;
+    write_mcp_config(&project)?;
+    if runtime == "claude-code" {
+        install_handoff_skill(&project)?;
+    }
+    if args.json {
+        print_json(
+            json!({"ok": true, "project": project, "runtime": runtime, "session": identity_json(&session), "mode": mode}),
+        );
+    } else {
+        println!("Initialized handoff at {}", app_home()?.display());
+        println!("session: {} ({})", session.agent, session.runtime);
+        println!("delivery: {mode}");
+        println!("mcp: .mcp.json");
+        if runtime == "claude-code" {
+            println!("skill: .claude/skills/handoff/SKILL.md");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_profile(conn: &Connection, args: ProfileArgs) -> Result<()> {
+    match args.command {
+        ProfileCommand::Create(args) => cmd_profile_create(conn, args),
+        ProfileCommand::List(args) => cmd_profile_list(conn, args),
+        ProfileCommand::Set(args) => cmd_profile_set(conn, args),
+    }
+}
+
+fn cmd_profile_create(conn: &Connection, args: ProfileCreateArgs) -> Result<()> {
+    if args.prompt.is_some() && args.prompt_file.is_some() {
+        bail!("invalid_arguments: use either --prompt or --prompt-file, not both");
+    }
     let runtime = args.runtime.unwrap_or_else(detect_runtime);
     let project = project_path(args.project)?;
-    let now = now();
-    let team_id = get_or_create_team(conn, &args.team)?;
-    let agent_id = get_or_create_agent(conn, &team_id, &args.agent, runtime.as_str())?;
-    conn.execute(
-        "insert into project_registrations (id, team_id, agent_id, project_path, runtime, created_at, updated_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-         on conflict(team_id, agent_id, project_path, runtime)
-         do update set updated_at=excluded.updated_at",
-        params![id(), team_id, agent_id, project, runtime.as_str(), now],
+    let team_id = project_team_id(conn, &project)?;
+    let agent_id = get_or_create_agent(conn, &team_id, &args.name, runtime.as_str())?;
+    register_project_agent(conn, &team_id, &agent_id, &project, runtime.as_str())?;
+    upsert_profile_settings(
+        conn,
+        &agent_id,
+        args.prompt.as_deref(),
+        args.prompt_file.as_deref(),
+        None,
     )?;
     append_event(
         conn,
-        "project.registered",
+        "profile.created",
         Some(&team_id),
         Some(&agent_id),
-        Some(&project),
-        json!({"team": args.team, "agent": args.agent, "runtime": runtime.as_str(), "project": project}),
+        Some(&agent_id),
+        json!({"project": project, "profile": args.name, "runtime": runtime.as_str()}),
     )?;
     if args.json {
         print_json(
-            json!({"ok": true, "team": args.team, "agent": args.agent, "runtime": runtime.as_str(), "project": project}),
+            json!({"ok": true, "profile": args.name, "runtime": runtime.as_str(), "project": project}),
         );
     } else {
-        println!(
-            "Joined team '{}' as '{}' ({})",
-            args.team,
-            args.agent,
-            runtime.as_str()
+        println!("profile {} ({})", args.name, runtime.as_str());
+    }
+    Ok(())
+}
+
+fn cmd_profile_list(conn: &Connection, args: ProjectArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let profiles = list_profiles(conn, &project)?;
+    if args.json {
+        print_json(json!({"ok": true, "project": project, "profiles": profiles}));
+    } else if profiles.is_empty() {
+        println!("No profiles");
+    } else {
+        for profile in profiles {
+            println!(
+                "{} ({})",
+                profile["name"].as_str().unwrap_or_default(),
+                profile["runtime"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_profile_set(conn: &Connection, args: ProfileSetArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let profile = profile_by_name(conn, &project, &args.name)?;
+    let mut options = profile_options(conn, &profile.agent_id)?;
+    let mut prompt = None;
+    let mut prompt_file = None;
+    for setting in &args.settings {
+        let Some((key, value)) = setting.split_once('=') else {
+            bail!("invalid_arguments: expected key=value setting, got {setting}");
+        };
+        match key {
+            "prompt" => prompt = Some(value.to_string()),
+            "prompt_file" | "prompt-file" => prompt_file = Some(PathBuf::from(value)),
+            "runtime" => {
+                conn.execute(
+                    "update agents set runtime=?1, updated_at=?2 where id=?3",
+                    params![value, now(), profile.agent_id],
+                )?;
+                register_project_agent(conn, &profile.team_id, &profile.agent_id, &project, value)?;
+            }
+            _ => {
+                options[key] = Value::String(value.to_string());
+            }
+        }
+    }
+    upsert_profile_settings(
+        conn,
+        &profile.agent_id,
+        prompt.as_deref(),
+        prompt_file.as_deref(),
+        Some(options),
+    )?;
+    if args.json {
+        print_json(json!({"ok": true, "profile": args.name}));
+    } else {
+        println!("updated profile {}", args.name);
+    }
+    Ok(())
+}
+
+fn cmd_sessions(conn: &Connection, args: ProjectArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let current = current_session(conn, &project, None, None)?;
+    let sessions = list_sessions(conn, &project)?;
+    if args.json {
+        print_json(
+            json!({"ok": true, "project": project, "current": identity_json(&current), "sessions": sessions}),
         );
+    } else {
+        for session in sessions {
+            let marker = if session["agent_id"].as_str() == Some(current.agent_id.as_str()) {
+                "*"
+            } else {
+                " "
+            };
+            let alias = session["alias"].as_str().unwrap_or("");
+            println!(
+                "{marker} {} {} ({})",
+                session["session_key"].as_str().unwrap_or_default(),
+                alias,
+                session["runtime"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_session(conn: &Connection, args: SessionArgs) -> Result<()> {
+    match args.command {
+        SessionCommand::Alias(args) => cmd_session_alias(conn, args),
+    }
+}
+
+fn cmd_session_alias(conn: &Connection, args: SessionAliasArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let runtime = args.runtime.unwrap_or_else(detect_runtime);
+    let session = current_session(conn, &project, Some(runtime.as_str()), None)?;
+    set_session_alias(conn, &project, &session.agent_id, &args.alias)?;
+    if args.json {
+        print_json(json!({"ok": true, "session": session.agent, "alias": args.alias}));
+    } else {
+        println!("session alias {}", args.alias);
     }
     Ok(())
 }
 
 fn cmd_whoami(conn: &Connection, args: ProjectArgs) -> Result<()> {
     let project = project_path(args.project)?;
-    let identities = identities_for_project(conn, &project)?;
+    let session = current_session(conn, &project, None, None)?;
     if args.json {
-        print_json(
-            json!({"ok": true, "project": project, "identities": identities_to_json(&identities)}),
-        );
-    } else if identities.is_empty() {
-        println!("not joined: {project}");
+        print_json(json!({"ok": true, "project": project, "session": identity_json(&session)}));
     } else {
-        for identity in identities {
-            println!(
-                "{} / {} ({})",
-                identity.team, identity.agent, identity.runtime
-            );
-        }
-    }
-    Ok(())
-}
-
-fn cmd_actas(conn: &Connection, args: AgentArg) -> Result<()> {
-    let project = project_path(args.project)?;
-    let identities = identities_for_project(conn, &project)?;
-    let identity = identities
-        .into_iter()
-        .find(|item| item.agent == args.agent)
-        .ok_or_else(|| anyhow!("unknown agent identity for this project: {}", args.agent))?;
-    let session_id = stable_session_id();
-    claim_role_lock(conn, &identity, &project, session_id.as_deref())?;
-    append_event(
-        conn,
-        "agent.role_claimed",
-        Some(&identity.team_id),
-        Some(&identity.agent_id),
-        Some(&project),
-        json!({"project": project, "agent": identity.agent, "session_id": session_id}),
-    )?;
-    if args.json {
-        print_json(
-            json!({"ok": true, "active": identity.agent, "exclusive": session_id.is_some()}),
-        );
-    } else {
-        println!("Active role: {}", identity.agent);
-        if session_id.is_none() {
-            println!(
-                "No stable session id detected; role selection is project-local and lease-based."
-            );
-        }
+        println!("{} ({})", session.agent, session.runtime);
     }
     Ok(())
 }
 
 fn cmd_active(conn: &Connection, args: ProjectArgs) -> Result<()> {
     let project = project_path(args.project)?;
-    let active = active_identity(conn, &project)?;
+    let active = current_session(conn, &project, None, None)?;
     if args.json {
-        print_json(json!({"ok": true, "active": active.as_ref().map(identity_json)}));
-    } else if let Some(identity) = active {
-        println!(
-            "{} / {} ({})",
-            identity.team, identity.agent, identity.runtime
-        );
+        print_json(json!({"ok": true, "active": identity_json(&active)}));
     } else {
-        println!("No active role");
-    }
-    Ok(())
-}
-
-fn cmd_drop(conn: &Connection, args: AgentArg) -> Result<()> {
-    let project = project_path(args.project)?;
-    let identities = identities_for_project(conn, &project)?;
-    let identity = identities
-        .into_iter()
-        .find(|item| item.agent == args.agent)
-        .ok_or_else(|| anyhow!("unknown agent identity for this project: {}", args.agent))?;
-    conn.execute(
-        "delete from project_registrations where team_id=?1 and agent_id=?2 and project_path=?3 and runtime=?4",
-        params![identity.team_id, identity.agent_id, project, identity.runtime],
-    )?;
-    conn.execute(
-        "delete from role_locks where team_id=?1 and agent_id=?2 and project_path=?3 and runtime=?4",
-        params![identity.team_id, identity.agent_id, project, identity.runtime],
-    )?;
-    append_event(
-        conn,
-        "agent.role_released",
-        Some(&identity.team_id),
-        Some(&identity.agent_id),
-        Some(&project),
-        json!({"project": project, "agent": identity.agent}),
-    )?;
-    if args.json {
-        print_json(json!({"ok": true, "dropped": identity.agent}));
-    } else {
-        println!("Dropped role '{}'", identity.agent);
-    }
-    Ok(())
-}
-
-fn cmd_agents(conn: &Connection, args: JsonArgs) -> Result<()> {
-    let identity = resolve_identity(conn, None, None, None)?;
-    let agents = list_agents(conn, &identity.team_id)?;
-    if args.json {
-        print_json(json!({"ok": true, "team": identity.team, "agents": agents}));
-    } else {
-        for agent in agents {
-            println!(
-                "{} ({})",
-                agent["name"].as_str().unwrap_or_default(),
-                agent["runtime"].as_str().unwrap_or_default()
-            );
-        }
+        println!("{} ({})", active.agent, active.runtime);
     }
     Ok(())
 }
 
 fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()> {
-    let sender = resolve_identity(conn, args.as_agent.as_deref(), args.team.as_deref(), None)?;
-    let recipient = agent_by_name(conn, &sender.team_id, &args.agent)?;
+    let project = project_path(None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
+    let recipient = session_by_name(conn, &project, &args.session)?;
     let created_context = create_send_context_if_requested(conn, &sender, &args)?;
     let context_id = args.context.as_deref().or(created_context.as_deref());
     let body = read_send_body(&args, context_id.is_some())?;
@@ -927,7 +1058,8 @@ fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()>
 
 fn cmd_reply(conn: &Connection, args: ReplyArgs) -> Result<()> {
     let body = read_message_body(&args.message, args.stdin, args.file.as_deref(), None)?;
-    let sender = resolve_identity(conn, args.as_agent.as_deref(), None, None)?;
+    let project = project_path(None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
     let recipient_id = reply_recipient(conn, &args.thread_id, &sender.agent_id)?;
     let message_id = create_message(
         conn,
@@ -952,7 +1084,7 @@ fn cmd_reply(conn: &Connection, args: ReplyArgs) -> Result<()> {
 
 fn cmd_inbox(conn: &Connection, args: InboxArgs) -> Result<()> {
     let project = project_path(args.project)?;
-    let identity = resolve_identity(conn, args.as_agent.as_deref(), None, Some(&project))?;
+    let identity = current_session(conn, &project, None, args.session_id.as_deref())?;
     let unread_only = !args.all;
     let messages = inbox_messages(conn, &identity.agent_id, unread_only, args.limit)?;
     let mark_read = !(args.peek || args.no_mark_read);
@@ -988,7 +1120,8 @@ fn cmd_inbox(conn: &Connection, args: InboxArgs) -> Result<()> {
 }
 
 fn cmd_history(conn: &Connection, args: HistoryArgs) -> Result<()> {
-    let identity = resolve_identity(conn, None, args.team.as_deref(), None)?;
+    let project = project_path(None)?;
+    let identity = current_session(conn, &project, None, None)?;
     let messages = history_messages(
         conn,
         &identity.team_id,
@@ -1065,41 +1198,87 @@ fn cmd_mode(conn: &Connection, args: ModeArgs) -> Result<()> {
     Ok(())
 }
 
+fn cmd_daemon(conn: &Connection, args: DaemonArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let interval = args.interval.max(1);
+    loop {
+        let written = write_notify_files(conn, &project)?;
+        if args.json {
+            print_json(json!({"ok": true, "project": project, "written": written}));
+        }
+        if args.once {
+            if !args.json {
+                println!("wrote {written} notification file(s)");
+            }
+            return Ok(());
+        }
+        thread::sleep(Duration::from_secs(interval));
+    }
+}
+
+fn cmd_notify(conn: &Connection, args: NotifyArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let runtime = args.runtime.unwrap_or_else(detect_runtime);
+    let session_key = current_session_key(conn, &project, args.session_id)?;
+    let identity = current_session(conn, &project, Some(runtime.as_str()), Some(&session_key))?;
+    let path = notify_path(&project, &session_key)?;
+    if !path.exists() {
+        let messages = inbox_messages(conn, &identity.agent_id, true, DEFAULT_LIMIT)?;
+        for message in &messages {
+            let message_id = message["id"].as_str().unwrap_or_default();
+            mark_message_read(conn, &identity, message_id)?;
+        }
+        if args.json {
+            print_json(
+                json!({"ok": true, "messages": messages, "marked_read": true, "source": "inbox"}),
+            );
+        } else if messages.is_empty() {
+            println!("No notifications");
+        } else {
+            let session = NotifySession {
+                agent_id: identity.agent_id,
+                session_key,
+                label: identity.agent,
+            };
+            print!("{}", notify_markdown(&session, &messages));
+        }
+        return Ok(());
+    }
+    let content = fs::read_to_string(&path)?;
+    let message_ids = notify_message_ids(&content);
+    for message_id in &message_ids {
+        mark_message_read(conn, &identity, message_id)?;
+    }
+    let _ = fs::remove_file(&path);
+    if args.json {
+        print_json(json!({"ok": true, "message_ids": message_ids, "body": content}));
+    } else {
+        print!("{content}");
+    }
+    Ok(())
+}
+
 fn cmd_monitor(conn: &Connection, args: MonitorArgs) -> Result<()> {
     let project = project_path(args.project.clone())?;
     let runtime = args.runtime.unwrap_or_else(detect_runtime);
     if args.instruction {
-        let session_id = args
-            .session_id
-            .or_else(|| session_id_from_hook_stdin().ok().flatten())
-            .or_else(stable_session_id)
-            .unwrap_or_else(|| format!("unknown-{}", std::process::id()));
+        let session_id = current_session_key(
+            conn,
+            &project,
+            args.session_id
+                .or_else(|| session_id_from_hook_stdin().ok().flatten()),
+        )?;
         print_monitor_instruction(&project, runtime.as_str(), &session_id)?;
         return Ok(());
     }
 
-    cleanup_stale_role_locks(conn)?;
-    let session_id = args.session_id.or_else(stable_session_id);
-    if let Some(session_id) = session_id.as_deref() {
-        claim_monitor_pid(session_id)?;
-    }
+    let session_id = current_session_key(conn, &project, args.session_id)?;
+    claim_monitor_pid(&session_id)?;
 
     let interval = args.interval.max(1);
     loop {
-        let identities = monitor_identities(
-            conn,
-            &project,
-            runtime.as_str(),
-            args.as_agent.as_deref(),
-            session_id.as_deref(),
-        )?;
-        if let (Some(agent), Some(session_id)) = (args.as_agent.as_deref(), session_id.as_deref()) {
-            let identity = identities
-                .iter()
-                .find(|item| item.agent == agent)
-                .ok_or_else(|| anyhow!("unknown agent identity for monitor: {agent}"))?;
-            claim_role_lock(conn, identity, &project, Some(session_id))?;
-        }
+        let identity = current_session(conn, &project, Some(runtime.as_str()), Some(&session_id))?;
+        let identities = vec![identity];
         let delivered = deliver_monitor_messages(conn, &identities, args.json)?;
         if args.once {
             if args.json && delivered == 0 {
@@ -1107,32 +1286,16 @@ fn cmd_monitor(conn: &Connection, args: MonitorArgs) -> Result<()> {
             }
             return Ok(());
         }
-        if let (Some(agent), Some(session_id)) = (args.as_agent.as_deref(), session_id.as_deref())
-            && let Some(identity) = identities.iter().find(|item| item.agent == agent)
-        {
-            refresh_role_lock(conn, identity, &project, session_id)?;
-        }
         std::thread::sleep(Duration::from_secs(interval));
     }
 }
 
-fn cmd_leave(conn: &Connection, args: LeaveArgs) -> Result<()> {
-    let identity = resolve_identity(conn, args.as_agent.as_deref(), args.team.as_deref(), None)?;
-    let project = project_path(None)?;
-    conn.execute(
-        "delete from project_registrations where team_id=?1 and agent_id=?2 and project_path=?3",
-        params![identity.team_id, identity.agent_id, project],
-    )?;
-    if args.json {
-        print_json(json!({"ok": true}));
-    } else {
-        println!("Left {} as {}", identity.team, identity.agent);
-    }
-    Ok(())
-}
-
 fn cmd_reset(conn: &Connection, args: ProjectArgs) -> Result<()> {
     let project = project_path(args.project)?;
+    conn.execute(
+        "delete from sessions where project_path=?1",
+        params![project],
+    )?;
     conn.execute(
         "delete from project_registrations where project_path=?1",
         params![project],
@@ -1157,45 +1320,6 @@ fn cmd_reset(conn: &Connection, args: ProjectArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_rename_team(conn: &Connection, args: RenameTeamArgs) -> Result<()> {
-    let old_id: String = conn
-        .query_row(
-            "select id from teams where name=?1",
-            params![args.old],
-            |row| row.get(0),
-        )
-        .optional()?
-        .ok_or_else(|| anyhow!("unknown team: {}", args.old))?;
-    let existing: Option<String> = conn
-        .query_row(
-            "select id from teams where name=?1",
-            params![args.new],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if existing.is_some() && !args.merge {
-        bail!("team already exists: {}", args.new);
-    }
-    conn.execute(
-        "update teams set name=?1, updated_at=?2 where id=?3",
-        params![args.new, now(), old_id],
-    )?;
-    append_event(
-        conn,
-        "team.renamed",
-        Some(&old_id),
-        None,
-        Some(&old_id),
-        json!({"old": args.old, "new": args.new}),
-    )?;
-    if args.json {
-        print_json(json!({"ok": true, "team": args.new}));
-    } else {
-        println!("Renamed team to '{}'", args.new);
-    }
-    Ok(())
-}
-
 fn cmd_context(conn: &Connection, args: ContextArgs) -> Result<()> {
     match args.command {
         ContextCommand::Create(args) => cmd_context_create(conn, args),
@@ -1205,7 +1329,8 @@ fn cmd_context(conn: &Connection, args: ContextArgs) -> Result<()> {
 }
 
 fn cmd_context_create(conn: &Connection, args: ContextCreateArgs) -> Result<()> {
-    let identity = resolve_identity(conn, args.as_agent.as_deref(), None, None)?;
+    let project = project_path(None)?;
+    let identity = sender_session(conn, &project, args.as_agent.as_deref())?;
     let context_id = create_context(conn, &identity, args.title.as_deref())?;
     add_context_inputs(
         conn,
@@ -1246,7 +1371,8 @@ fn cmd_context_show(conn: &Connection, args: ContextShowArgs) -> Result<()> {
 }
 
 fn cmd_context_list(conn: &Connection, args: JsonArgs) -> Result<()> {
-    let identity = resolve_identity(conn, None, None, None)?;
+    let project = project_path(None)?;
+    let identity = current_session(conn, &project, None, None)?;
     let mut stmt = conn.prepare(
         "select id, title, created_at from contexts where team_id=?1 order by created_at desc limit 50",
     )?;
@@ -1269,8 +1395,9 @@ fn cmd_context_list(conn: &Connection, args: JsonArgs) -> Result<()> {
 }
 
 fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
-    let sender = resolve_identity(conn, args.as_agent.as_deref(), None, None)?;
-    let target = agent_by_name(conn, &sender.team_id, &args.agent)?;
+    let project = project_path(None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
+    let target = profile_by_name(conn, &project, &args.profile)?;
     let job_id = create_run_job(
         conn,
         &sender,
@@ -1301,8 +1428,9 @@ fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
 }
 
 fn cmd_delegate(conn: &Connection, args: DelegateArgs) -> Result<()> {
-    let sender = resolve_identity(conn, args.as_agent.as_deref(), None, None)?;
-    let target = agent_by_name(conn, &sender.team_id, &args.agent)?;
+    let project = project_path(None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
+    let target = profile_by_name(conn, &project, &args.profile)?;
     let task = match (args.task.as_deref(), target.runtime.as_str()) {
         (Some(task), _) => task,
         (None, "shell") => {
@@ -1558,13 +1686,13 @@ fn cmd_retry(conn: &Connection, args: RetryArgs) -> Result<()> {
         .ok_or_else(|| anyhow!("missing target"))?
         .to_string();
     let run_args = RunArgs {
-        agent: target,
+        profile: target,
         task: task["body"].as_str().unwrap_or_default().to_string(),
         context: job["context_id"].as_str().map(ToOwned::to_owned),
         git_diff: false,
         file: None,
         timeout: job["timeout_seconds"].as_i64().map(|value| value as u64),
-        as_agent: task["from"].as_str().map(ToOwned::to_owned),
+        as_agent: None,
         subject: task["subject"].as_str().map(ToOwned::to_owned),
         json: args.json,
         retry_of_job_id: Some(args.job_id),
@@ -1596,6 +1724,87 @@ fn cmd_install_alias(args: InstallAliasArgs) -> Result<()> {
     Ok(())
 }
 
+fn write_mcp_config(project: &str) -> Result<()> {
+    let path = Path::new(project).join(".mcp.json");
+    let mut value = if path.exists() {
+        let content = fs::read_to_string(&path)?;
+        serde_json::from_str::<Value>(&content).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+    if !value.is_object() {
+        value = json!({});
+    }
+    let object = value.as_object_mut().expect("object initialized");
+    let servers = object
+        .entry("mcpServers")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !servers.is_object() {
+        *servers = Value::Object(serde_json::Map::new());
+    }
+    let exe = env::current_exe()?;
+    let server_path = mcp_server_path()?;
+    let server = if let Some(server_path) = server_path {
+        json!({
+            "command": "node",
+            "args": [server_path.display().to_string()],
+            "env": {"HANDOFF_BIN": exe.display().to_string()}
+        })
+    } else {
+        json!({
+            "command": "agent-handoff-mcp",
+            "env": {"HANDOFF_BIN": exe.display().to_string()}
+        })
+    };
+    servers
+        .as_object_mut()
+        .expect("mcpServers object initialized")
+        .insert("agent-handoff".to_string(), server);
+    fs::write(path, serde_json::to_string_pretty(&value)? + "\n")?;
+    Ok(())
+}
+
+fn mcp_server_path() -> Result<Option<PathBuf>> {
+    let cwd = env::current_dir()?;
+    let candidate = cwd
+        .join("integrations")
+        .join("mcp")
+        .join("agent-handoff-mcp")
+        .join("server.js");
+    if candidate.exists() {
+        Ok(Some(candidate))
+    } else {
+        Ok(None)
+    }
+}
+
+fn install_handoff_skill(project: &str) -> Result<()> {
+    let source = Path::new(project)
+        .join("integrations")
+        .join("skills")
+        .join("agent-handoff")
+        .join("SKILL.md");
+    let content = if source.exists() {
+        fs::read_to_string(source)?
+    } else {
+        default_skill_content().to_string()
+    };
+    let target = Path::new(project)
+        .join(".claude")
+        .join("skills")
+        .join("handoff")
+        .join("SKILL.md");
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(target, content)?;
+    Ok(())
+}
+
+fn default_skill_content() -> &'static str {
+    "# handoff\n\nUse `handoff delegate <profile> --task \"...\" --wait` for synchronous sub-agent work.\nUse `handoff to <session|alias> \"...\"` for live session coordination.\nRun `handoff notify` after turns when notification hooks are unavailable.\n"
+}
+
 fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
     let job = job_row(conn, job_id)?.ok_or_else(|| anyhow!("unknown job: {job_id}"))?;
     set_job_state(conn, job_id, "starting", None, None)?;
@@ -1623,7 +1832,8 @@ fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
         return Ok(());
     };
     set_job_state(conn, job_id, "running", None, None)?;
-    let prompt = agent_prompt(&task_body, &context_text);
+    let system_prompt = profile_system_prompt(conn, &job.target_agent_id)?;
+    let prompt = agent_prompt(system_prompt.as_deref(), &task_body, &context_text);
     append_log(
         conn,
         job_id,
@@ -1740,6 +1950,7 @@ fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
 
 #[derive(Debug)]
 struct AgentRef {
+    team_id: String,
     agent_id: String,
     runtime: String,
 }
@@ -1821,39 +2032,230 @@ fn get_or_create_agent(
     Ok(agent_id)
 }
 
-fn identities_for_project(conn: &Connection, project: &str) -> Result<Vec<Identity>> {
-    let mut stmt = conn.prepare(
-        "select t.id, t.name, a.id, a.name, pr.runtime
-         from project_registrations pr
-         join teams t on t.id=pr.team_id
-         join agents a on a.id=pr.agent_id
-         where pr.project_path=?1
-         order by t.name, a.name",
+fn project_team_id(conn: &Connection, project: &str) -> Result<String> {
+    let basename = Path::new(project)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project");
+    let hash = content_hash(project);
+    let name = format!("project:{basename}:{}", &hash[..12]);
+    get_or_create_team(conn, &name)
+}
+
+fn register_project_agent(
+    conn: &Connection,
+    team_id: &str,
+    agent_id: &str,
+    project: &str,
+    runtime: &str,
+) -> Result<()> {
+    conn.execute(
+        "insert into project_registrations (id, team_id, agent_id, project_path, runtime, created_at, updated_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+         on conflict(team_id, agent_id, project_path, runtime)
+         do update set updated_at=excluded.updated_at",
+        params![id(), team_id, agent_id, project, runtime, now()],
     )?;
-    let rows = stmt.query_map(params![project], |row| {
-        Ok(Identity {
-            team_id: row.get(0)?,
-            team: row.get(1)?,
-            agent_id: row.get(2)?,
-            agent: row.get(3)?,
-            runtime: row.get(4)?,
-        })
+    Ok(())
+}
+
+fn upsert_profile_settings(
+    conn: &Connection,
+    agent_id: &str,
+    prompt: Option<&str>,
+    prompt_file: Option<&Path>,
+    options: Option<Value>,
+) -> Result<()> {
+    let existing = conn
+        .query_row(
+            "select prompt, prompt_file, options_json from profile_settings where agent_id=?1",
+            params![agent_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (current_prompt, current_prompt_file, current_options) =
+        existing.unwrap_or((None, None, "{}".to_string()));
+    let options_json = options
+        .unwrap_or_else(|| serde_json::from_str(&current_options).unwrap_or_else(|_| json!({})));
+    conn.execute(
+        "insert into profile_settings (agent_id, prompt, prompt_file, options_json, created_at, updated_at)
+         values (?1, ?2, ?3, ?4, ?5, ?5)
+         on conflict(agent_id) do update set
+           prompt=excluded.prompt,
+           prompt_file=excluded.prompt_file,
+           options_json=excluded.options_json,
+           updated_at=excluded.updated_at",
+        params![
+            agent_id,
+            prompt.map(ToOwned::to_owned).or(current_prompt),
+            prompt_file
+                .map(|path| path.display().to_string())
+                .or(current_prompt_file),
+            options_json.to_string(),
+            now()
+        ],
+    )?;
+    Ok(())
+}
+
+fn profile_options(conn: &Connection, agent_id: &str) -> Result<Value> {
+    let options_json: Option<String> = conn
+        .query_row(
+            "select options_json from profile_settings where agent_id=?1",
+            params![agent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(options_json
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_else(|| json!({})))
+}
+
+fn profile_system_prompt(conn: &Connection, agent_id: &str) -> Result<Option<String>> {
+    let row: Option<(Option<String>, Option<String>)> = conn
+        .query_row(
+            "select prompt, prompt_file from profile_settings where agent_id=?1",
+            params![agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((prompt, prompt_file)) = row else {
+        return Ok(None);
+    };
+    if let Some(prompt) = prompt.filter(|value| !value.trim().is_empty()) {
+        return Ok(Some(prompt));
+    }
+    if let Some(prompt_file) = prompt_file.filter(|value| !value.trim().is_empty()) {
+        return fs::read_to_string(&prompt_file)
+            .with_context(|| format!("read profile prompt file {prompt_file}"))
+            .map(Some);
+    }
+    Ok(None)
+}
+
+fn list_profiles(conn: &Connection, project: &str) -> Result<Vec<Value>> {
+    let team_id = project_team_id(conn, project)?;
+    let mut stmt = conn.prepare(
+        "select a.name, a.runtime, ps.prompt, ps.prompt_file, ps.options_json, a.created_at
+         from agents a
+         join profile_settings ps on ps.agent_id=a.id
+         join project_registrations pr on pr.agent_id=a.id and pr.team_id=a.team_id
+         where a.team_id=?1 and pr.project_path=?2
+         order by a.name",
+    )?;
+    let rows = stmt.query_map(params![team_id, project], |row| {
+        let options_json: String = row.get(4)?;
+        Ok(json!({
+            "name": row.get::<_, String>(0)?,
+            "runtime": row.get::<_, String>(1)?,
+            "prompt": row.get::<_, Option<String>>(2)?,
+            "prompt_file": row.get::<_, Option<String>>(3)?,
+            "options": serde_json::from_str::<Value>(&options_json).unwrap_or_else(|_| json!({})),
+            "created_at": row.get::<_, String>(5)?,
+        }))
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-fn active_identity(conn: &Connection, project: &str) -> Result<Option<Identity>> {
-    cleanup_stale_role_locks(conn)?;
+fn profile_by_name(conn: &Connection, project: &str, name: &str) -> Result<AgentRef> {
+    let team_id = project_team_id(conn, project)?;
     conn.query_row(
-        "select t.id, t.name, a.id, a.name, rl.runtime
-         from role_locks rl
-         join teams t on t.id=rl.team_id
-         join agents a on a.id=rl.agent_id
-         where rl.project_path=?1
-           and (rl.expires_at is null or rl.expires_at > ?2)
-         order by rl.claimed_at desc
-         limit 1",
-        params![project, now()],
+        "select a.id, a.name, a.runtime from agents a
+         join profile_settings ps on ps.agent_id=a.id
+         join project_registrations pr on pr.agent_id=a.id and pr.team_id=a.team_id
+         where a.team_id=?1 and pr.project_path=?2 and a.name=?3",
+        params![team_id, project, name],
+        |row| {
+            Ok(AgentRef {
+                team_id: team_id.clone(),
+                agent_id: row.get(0)?,
+                runtime: row.get(2)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("unknown_profile: {name}"))
+}
+
+fn current_session_key(
+    conn: &Connection,
+    project: &str,
+    explicit: Option<String>,
+) -> Result<String> {
+    if let Some(value) = explicit.filter(|value| !value.trim().is_empty()) {
+        return Ok(value);
+    }
+    if let Some(value) = stable_session_id() {
+        return Ok(value);
+    }
+    let fallback: Option<String> = conn
+        .query_row(
+            "select session_key from sessions where project_path=?1 and source='fallback' order by created_at asc limit 1",
+            params![project],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(fallback.unwrap_or_else(|| format!("fallback-{}", id())))
+}
+
+fn current_session(
+    conn: &Connection,
+    project: &str,
+    runtime: Option<&str>,
+    explicit_key: Option<&str>,
+) -> Result<Identity> {
+    let runtime = runtime.unwrap_or_else(|| detect_runtime().as_str());
+    let session_key = current_session_key(conn, project, explicit_key.map(ToOwned::to_owned))?;
+    let source = if stable_session_id().as_deref() == Some(session_key.as_str()) {
+        "host"
+    } else if explicit_key.is_some() {
+        "explicit"
+    } else {
+        "fallback"
+    };
+    let team_id = project_team_id(conn, project)?;
+    if let Some(identity) = session_identity_by_key(conn, project, &session_key)? {
+        conn.execute(
+            "update sessions set runtime=?1, updated_at=?2, last_seen_at=?2 where project_path=?3 and session_key=?4",
+            params![runtime, now(), project, session_key],
+        )?;
+        return Ok(identity);
+    }
+    let session_name = session_display_name(&session_key);
+    let agent_id = get_or_create_agent(conn, &team_id, &session_name, runtime)?;
+    register_project_agent(conn, &team_id, &agent_id, project, runtime)?;
+    let now = now();
+    conn.execute(
+        "insert into sessions (id, team_id, agent_id, project_path, session_key, alias, runtime, source, created_at, updated_at, last_seen_at)
+         values (?1, ?2, ?3, ?4, ?5, null, ?6, ?7, ?8, ?8, ?8)
+         on conflict(project_path, session_key) do update set
+           runtime=excluded.runtime,
+           updated_at=excluded.updated_at,
+           last_seen_at=excluded.last_seen_at",
+        params![id(), team_id, agent_id, project, session_key, runtime, source, now],
+    )?;
+    session_identity_by_key(conn, project, &session_key)?
+        .ok_or_else(|| anyhow!("session_registration_failed: {session_key}"))
+}
+
+fn session_identity_by_key(
+    conn: &Connection,
+    project: &str,
+    session_key: &str,
+) -> Result<Option<Identity>> {
+    conn.query_row(
+        "select s.team_id, t.name, s.agent_id, coalesce(s.alias, a.name), s.runtime
+         from sessions s
+         join teams t on t.id=s.team_id
+         join agents a on a.id=s.agent_id
+         where s.project_path=?1 and s.session_key=?2",
+        params![project, session_key],
         |row| {
             Ok(Identity {
                 team_id: row.get(0)?,
@@ -1868,149 +2270,106 @@ fn active_identity(conn: &Connection, project: &str) -> Result<Option<Identity>>
     .map_err(Into::into)
 }
 
-fn claim_role_lock(
-    conn: &Connection,
-    identity: &Identity,
-    project: &str,
-    session_id: Option<&str>,
-) -> Result<()> {
-    cleanup_stale_role_locks(conn)?;
-    let existing: Option<(Option<String>, Option<String>)> = conn
-        .query_row(
-            "select session_id, expires_at from role_locks
-             where team_id=?1 and agent_id=?2 and project_path=?3 and runtime=?4",
-            params![
-                identity.team_id,
-                identity.agent_id,
-                project,
-                identity.runtime
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    if let Some((owner_session, expires_at)) = existing {
-        let owner_is_other = match (owner_session.as_deref(), session_id) {
-            (Some(owner), Some(current)) => owner != current,
-            (Some(_), None) => true,
-            _ => false,
-        };
-        if owner_is_other
-            && expires_at
-                .as_deref()
-                .is_none_or(|expires| expires > now().as_str())
-        {
-            bail!(
-                "role_locked: {} is held by another live session",
-                identity.agent
-            );
-        }
+fn sender_session(conn: &Connection, project: &str, explicit: Option<&str>) -> Result<Identity> {
+    if let Some(name) = explicit.filter(|value| !value.trim().is_empty()) {
+        return session_identity_by_name(conn, project, name);
     }
-    let claimed_at = now();
-    let expires_at = now_plus_seconds(ROLE_LOCK_TTL_SECONDS);
-    conn.execute(
-        "insert into role_locks (id, team_id, agent_id, project_path, runtime, session_id, process_id, claimed_at, expires_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         on conflict(team_id, agent_id, project_path, runtime)
-         do update set session_id=excluded.session_id, process_id=excluded.process_id, claimed_at=excluded.claimed_at, expires_at=excluded.expires_at",
-        params![
-            id(),
-            identity.team_id,
-            identity.agent_id,
-            project,
-            identity.runtime,
-            session_id,
-            std::process::id() as i64,
-            claimed_at,
-            expires_at
-        ],
-    )?;
-    Ok(())
+    current_session(conn, project, None, None)
 }
 
-fn refresh_role_lock(
-    conn: &Connection,
-    identity: &Identity,
-    project: &str,
-    session_id: &str,
-) -> Result<()> {
-    conn.execute(
-        "update role_locks set expires_at=?1, process_id=?2 where team_id=?3 and agent_id=?4 and project_path=?5 and runtime=?6 and session_id=?7",
-        params![
-            now_plus_seconds(ROLE_LOCK_TTL_SECONDS),
-            std::process::id() as i64,
-            identity.team_id,
-            identity.agent_id,
-            project,
-            identity.runtime,
-            session_id
-        ],
-    )?;
-    Ok(())
+fn session_identity_by_name(conn: &Connection, project: &str, name: &str) -> Result<Identity> {
+    conn.query_row(
+        "select s.team_id, t.name, s.agent_id, coalesce(s.alias, a.name), s.runtime
+         from sessions s
+         join teams t on t.id=s.team_id
+         join agents a on a.id=s.agent_id
+         where s.project_path=?1 and (s.session_key=?2 or s.alias=?2 or a.name=?2)",
+        params![project, name],
+        |row| {
+            Ok(Identity {
+                team_id: row.get(0)?,
+                team: row.get(1)?,
+                agent_id: row.get(2)?,
+                agent: row.get(3)?,
+                runtime: row.get(4)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("unknown_session: {name}"))
 }
 
-fn role_lock_held_by_other(
-    conn: &Connection,
-    identity: &Identity,
-    project: &str,
-    session_id: Option<&str>,
-) -> Result<bool> {
-    cleanup_stale_role_locks(conn)?;
-    let owner: Option<Option<String>> = conn
+fn session_by_name(conn: &Connection, project: &str, name: &str) -> Result<AgentRef> {
+    conn.query_row(
+        "select s.team_id, s.agent_id, coalesce(s.alias, a.name), s.runtime
+         from sessions s
+         join agents a on a.id=s.agent_id
+         where s.project_path=?1 and (s.session_key=?2 or s.alias=?2 or a.name=?2)",
+        params![project, name],
+        |row| {
+            Ok(AgentRef {
+                team_id: row.get(0)?,
+                agent_id: row.get(1)?,
+                runtime: row.get(3)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("unknown_session: {name}"))
+}
+
+fn list_sessions(conn: &Connection, project: &str) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "select s.agent_id, s.session_key, s.alias, s.runtime, s.source, s.last_seen_at
+         from sessions s
+         where s.project_path=?1
+         order by s.last_seen_at desc",
+    )?;
+    let rows = stmt.query_map(params![project], |row| {
+        Ok(json!({
+            "agent_id": row.get::<_, String>(0)?,
+            "session_key": row.get::<_, String>(1)?,
+            "alias": row.get::<_, Option<String>>(2)?,
+            "runtime": row.get::<_, String>(3)?,
+            "source": row.get::<_, String>(4)?,
+            "last_seen_at": row.get::<_, String>(5)?,
+        }))
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn set_session_alias(conn: &Connection, project: &str, agent_id: &str, alias: &str) -> Result<()> {
+    let alias = alias.trim();
+    if alias.is_empty() {
+        bail!("invalid_arguments: alias cannot be empty");
+    }
+    let existing: Option<String> = conn
         .query_row(
-            "select session_id from role_locks
-             where team_id=?1 and agent_id=?2 and project_path=?3 and runtime=?4
-               and (expires_at is null or expires_at > ?5)",
-            params![
-                identity.team_id,
-                identity.agent_id,
-                project,
-                identity.runtime,
-                now()
-            ],
+            "select agent_id from sessions where project_path=?1 and alias=?2",
+            params![project, alias],
             |row| row.get(0),
         )
         .optional()?;
-    Ok(match owner.flatten() {
-        Some(owner) => session_id.is_none_or(|current| current != owner),
-        None => false,
-    })
-}
-
-fn cleanup_stale_role_locks(conn: &Connection) -> Result<()> {
+    if existing
+        .as_deref()
+        .is_some_and(|existing| existing != agent_id)
+    {
+        bail!("session_alias_taken: {alias}");
+    }
     conn.execute(
-        "delete from role_locks where expires_at is not null and expires_at <= ?1",
-        params![now()],
+        "update sessions set alias=?1, updated_at=?2 where project_path=?3 and agent_id=?4",
+        params![alias, now(), project, agent_id],
+    )?;
+    conn.execute(
+        "update agents set name=?1, updated_at=?2 where id=?3",
+        params![alias, now(), agent_id],
     )?;
     Ok(())
 }
 
-fn resolve_identity(
-    conn: &Connection,
-    as_agent: Option<&str>,
-    team: Option<&str>,
-    project_override: Option<&str>,
-) -> Result<Identity> {
-    let project = project_override
-        .map(ToOwned::to_owned)
-        .unwrap_or(project_path(None)?);
-    if as_agent.is_none()
-        && let Some(active) = active_identity(conn, &project)?
-        && team.is_none_or(|team| team == active.team)
-    {
-        return Ok(active);
-    }
-    let mut identities = identities_for_project(conn, &project)?;
-    if let Some(team) = team {
-        identities.retain(|item| item.team == team);
-    }
-    if let Some(as_agent) = as_agent {
-        identities.retain(|item| item.agent == as_agent);
-    }
-    match identities.len() {
-        0 => bail!("not_joined: no matching identity for project {project}"),
-        1 => Ok(identities.remove(0)),
-        _ => bail!("multiple_identities: use --as <agent>"),
-    }
+fn session_display_name(session_key: &str) -> String {
+    let hash = content_hash(session_key);
+    format!("session-{}", &hash[..8])
 }
 
 fn agent_by_name(conn: &Connection, team_id: &str, name: &str) -> Result<AgentRef> {
@@ -2019,6 +2378,7 @@ fn agent_by_name(conn: &Connection, team_id: &str, name: &str) -> Result<AgentRe
         params![team_id, name],
         |row| {
             Ok(AgentRef {
+                team_id: team_id.to_string(),
                 agent_id: row.get(0)?,
                 runtime: row.get(2)?,
             })
@@ -2026,15 +2386,6 @@ fn agent_by_name(conn: &Connection, team_id: &str, name: &str) -> Result<AgentRe
     )
     .optional()?
     .ok_or_else(|| anyhow!("unknown_agent: {name}"))
-}
-
-fn list_agents(conn: &Connection, team_id: &str) -> Result<Vec<serde_json::Value>> {
-    let mut stmt = conn
-        .prepare("select name, runtime, created_at from agents where team_id=?1 order by name")?;
-    let rows = stmt.query_map(params![team_id], |row| {
-        Ok(json!({"name": row.get::<_, String>(0)?, "runtime": row.get::<_, String>(1)?, "created_at": row.get::<_, String>(2)?}))
-    })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 #[derive(Debug)]
@@ -2165,31 +2516,6 @@ fn mark_message_read(conn: &Connection, identity: &Identity, message_id: &str) -
     Ok(())
 }
 
-fn monitor_identities(
-    conn: &Connection,
-    project: &str,
-    runtime: &str,
-    as_agent: Option<&str>,
-    session_id: Option<&str>,
-) -> Result<Vec<Identity>> {
-    let mut identities = identities_for_project(conn, project)?;
-    identities.retain(|item| item.runtime == runtime);
-    if let Some(as_agent) = as_agent {
-        identities.retain(|item| item.agent == as_agent);
-    } else if let Some(active) = active_identity(conn, project)?
-        && active.runtime == runtime
-    {
-        identities.retain(|item| item.agent_id == active.agent_id);
-    }
-    let mut available = Vec::new();
-    for identity in identities {
-        if !role_lock_held_by_other(conn, &identity, project, session_id)? {
-            available.push(identity);
-        }
-    }
-    Ok(available)
-}
-
 fn deliver_monitor_messages(
     conn: &Connection,
     identities: &[Identity],
@@ -2218,6 +2544,87 @@ fn deliver_monitor_messages(
         }
     }
     Ok(delivered)
+}
+
+fn write_notify_files(conn: &Connection, project: &str) -> Result<usize> {
+    let sessions = sessions_for_notify(conn, project)?;
+    let mut written = 0;
+    for session in sessions {
+        let messages = inbox_messages(conn, &session.agent_id, true, DEFAULT_LIMIT)?;
+        let path = notify_path(project, &session.session_key)?;
+        if messages.is_empty() {
+            if path.exists() {
+                let _ = fs::remove_file(path);
+            }
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, notify_markdown(&session, &messages))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+#[derive(Debug)]
+struct NotifySession {
+    agent_id: String,
+    session_key: String,
+    label: String,
+}
+
+fn sessions_for_notify(conn: &Connection, project: &str) -> Result<Vec<NotifySession>> {
+    let mut stmt = conn.prepare(
+        "select s.agent_id, s.session_key, coalesce(s.alias, a.name)
+         from sessions s
+         join agents a on a.id=s.agent_id
+         where s.project_path=?1
+         order by s.updated_at desc",
+    )?;
+    let rows = stmt.query_map(params![project], |row| {
+        Ok(NotifySession {
+            agent_id: row.get(0)?,
+            session_key: row.get(1)?,
+            label: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn notify_path(project: &str, session_key: &str) -> Result<PathBuf> {
+    let dir = Path::new(project).join(".handoff").join("notify");
+    Ok(dir.join(format!("{}.md", session_display_name(session_key))))
+}
+
+fn notify_markdown(session: &NotifySession, messages: &[Value]) -> String {
+    let mut output = format!("# handoff notifications for {}\n\n", session.label);
+    for message in messages {
+        let id = message["id"].as_str().unwrap_or_default();
+        output.push_str(&format!("<!-- handoff-message-id: {id} -->\n"));
+        output.push_str(&format!(
+            "## {} -> {}\n\n{}\n\n",
+            message["from"].as_str().unwrap_or_default(),
+            message["to"].as_str().unwrap_or_default(),
+            message["body"].as_str().unwrap_or_default()
+        ));
+        if let Some(context_id) = message["context_id"].as_str() {
+            output.push_str(&format!("Context: `{context_id}`\n\n"));
+        }
+    }
+    output
+}
+
+fn notify_message_ids(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("<!-- handoff-message-id: ")
+                .and_then(|rest| rest.strip_suffix(" -->"))
+                .map(ToOwned::to_owned)
+        })
+        .collect()
 }
 
 fn escape_monitor_body(body: &str) -> String {
@@ -2816,14 +3223,18 @@ fn adapter_command(runtime: &str, agent_name: &str, task: &str) -> Option<Adapte
     }
 }
 
-fn agent_prompt(task: &str, context: &str) -> String {
-    if context.trim().is_empty() {
-        task.to_string()
-    } else {
-        format!(
-            "{task}\n\nContext follows. Use it as the authoritative input for this task.\n{context}"
-        )
+fn agent_prompt(system_prompt: Option<&str>, task: &str, context: &str) -> String {
+    let mut sections = Vec::new();
+    if let Some(system_prompt) = system_prompt.filter(|value| !value.trim().is_empty()) {
+        sections.push(system_prompt.to_string());
     }
+    sections.push(task.to_string());
+    if !context.trim().is_empty() {
+        sections.push(format!(
+            "Context follows. Use it as the authoritative input for this task.\n{context}"
+        ));
+    }
+    sections.join("\n\n")
 }
 
 fn adapter_result_body(adapter: &AdapterCommand, stdout: &str) -> String {
@@ -3281,10 +3692,6 @@ fn now() -> String {
     Utc::now().to_rfc3339()
 }
 
-fn now_plus_seconds(seconds: i64) -> String {
-    (Utc::now() + ChronoDuration::seconds(seconds)).to_rfc3339()
-}
-
 fn content_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -3300,11 +3707,15 @@ fn print_json(value: serde_json::Value) {
 
 fn error_hint(message: &str) -> Option<&'static str> {
     if message.contains("multiple_identities") {
-        Some("  handoff active\n  handoff actas <agent>\n  handoff <command> --as <agent>")
+        Some("  handoff sessions\n  handoff session alias <alias>")
     } else if message.contains("not_joined") {
-        Some("  handoff join <team> <agent> --runtime shell\n  handoff actas <agent>")
+        Some("  handoff session alias <alias>\n  handoff profile create <profile> --runtime shell")
     } else if message.contains("unknown_agent") {
-        Some("  handoff agents\n  handoff join <team> <agent> --runtime shell")
+        Some("  handoff sessions\n  handoff profile list")
+    } else if message.contains("unknown_profile") {
+        Some("  handoff profile list\n  handoff profile create <profile> --runtime shell")
+    } else if message.contains("unknown_session") {
+        Some("  handoff sessions\n  handoff session alias <alias>")
     } else if message.contains("context_capture_failed") {
         Some(
             "  handoff context create --text \"notes\"\n  handoff context create --git-diff\n  handoff context create --file <path>",
@@ -3316,7 +3727,7 @@ fn error_hint(message: &str) -> Option<&'static str> {
     } else if message.contains("job_not_finished") {
         Some("  handoff status <job-id>\n  handoff logs <job-id>")
     } else if message.contains("role_locked") {
-        Some("  Use another agent identity, or wait for the role lease to expire.")
+        Some("  Use a different session alias or wait for the legacy role lease to expire.")
     } else {
         None
     }
@@ -3328,10 +3739,6 @@ fn first_line(value: &str) -> &str {
 
 fn identity_json(identity: &Identity) -> serde_json::Value {
     json!({"team": identity.team, "agent": identity.agent, "runtime": identity.runtime})
-}
-
-fn identities_to_json(identities: &[Identity]) -> Vec<serde_json::Value> {
-    identities.iter().map(identity_json).collect()
 }
 
 fn env_key(value: &str) -> String {
@@ -3360,6 +3767,39 @@ mod tests {
         (dir, conn)
     }
 
+    fn test_project() -> String {
+        project_path(None).unwrap()
+    }
+
+    fn current_test_session(conn: &Connection, alias: &str) -> Identity {
+        let project = test_project();
+        let session = current_session(conn, &project, Some("shell"), None).unwrap();
+        set_session_alias(conn, &project, &session.agent_id, alias).unwrap();
+        current_session(conn, &project, Some("shell"), None).unwrap()
+    }
+
+    fn named_test_session(conn: &Connection, key: &str, alias: &str) -> Identity {
+        let project = test_project();
+        let session = current_session(conn, &project, Some("shell"), Some(key)).unwrap();
+        set_session_alias(conn, &project, &session.agent_id, alias).unwrap();
+        current_session(conn, &project, Some("shell"), Some(key)).unwrap()
+    }
+
+    fn test_profile(conn: &Connection, name: &str) {
+        cmd_profile_create(
+            conn,
+            ProfileCreateArgs {
+                name: name.into(),
+                runtime: Some(Runtime::Shell),
+                prompt: None,
+                prompt_file: None,
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+    }
+
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
@@ -3368,41 +3808,12 @@ mod tests {
     #[test]
     fn join_send_and_inbox_work() {
         let (_dir, conn) = test_conn();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "alice".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "bob".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        cmd_actas(
-            &conn,
-            AgentArg {
-                agent: "alice".into(),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
+        current_test_session(&conn, "alice");
+        let bob = named_test_session(&conn, "bob-session", "bob");
         cmd_send(
             &conn,
             SendArgs {
-                agent: "bob".into(),
+                session: "bob".into(),
                 message: vec!["hello".into()],
                 as_agent: None,
                 team: None,
@@ -3420,10 +3831,41 @@ mod tests {
             "message",
         )
         .unwrap();
-        let bob = agent_by_name(&conn, &get_or_create_team(&conn, "team").unwrap(), "bob").unwrap();
         let inbox = inbox_messages(&conn, &bob.agent_id, true, 10).unwrap();
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0]["body"], "hello");
+    }
+
+    #[test]
+    fn send_honors_explicit_sender_session() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "lead");
+        named_test_session(&conn, "reviewer-session", "reviewer");
+        let observer = named_test_session(&conn, "observer-session", "observer");
+        cmd_send(
+            &conn,
+            SendArgs {
+                session: "observer".into(),
+                message: vec!["from reviewer".into()],
+                as_agent: Some("reviewer".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        let inbox = inbox_messages(&conn, &observer.agent_id, true, 10).unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0]["from"], "reviewer");
     }
 
     #[test]
@@ -3431,18 +3873,7 @@ mod tests {
         let (_dir, conn) = test_conn();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         fs::write(tmp.path(), "context").unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "alice".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        let identity = resolve_identity(&conn, Some("alice"), None, None).unwrap();
+        let identity = current_test_session(&conn, "alice");
         let context_id = create_context(&conn, &identity, Some("test")).unwrap();
         let item = capture_file_context(tmp.path()).unwrap();
         persist_context_items(&conn, &context_id, &[item]).unwrap();
@@ -3453,7 +3884,7 @@ mod tests {
 
     #[test]
     fn agent_prompt_appends_context() {
-        let prompt = agent_prompt("Review this diff.", "--- git_diff ---\n+change");
+        let prompt = agent_prompt(None, "Review this diff.", "--- git_diff ---\n+change");
         assert!(prompt.starts_with("Review this diff."));
         assert!(prompt.contains("Context follows."));
         assert!(prompt.contains("+change"));
@@ -3513,32 +3944,12 @@ mod tests {
     #[test]
     fn shell_delegate_requires_task() {
         let (_dir, conn) = test_conn();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "lead".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "reviewer".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
+        current_test_session(&conn, "lead");
+        test_profile(&conn, "reviewer");
         let err = cmd_delegate(
             &conn,
             DelegateArgs {
-                agent: "reviewer".into(),
+                profile: "reviewer".into(),
                 task: None,
                 context: None,
                 git_diff: false,
@@ -3560,32 +3971,12 @@ mod tests {
         let (_dir, conn) = test_conn();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         fs::write(tmp.path(), "handoff context").unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "alice".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "bob".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
+        current_test_session(&conn, "alice");
+        let bob = named_test_session(&conn, "bob-file-session", "bob");
         cmd_send(
             &conn,
             SendArgs {
-                agent: "bob".into(),
+                session: "bob".into(),
                 message: vec![],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -3603,7 +3994,6 @@ mod tests {
             "message",
         )
         .unwrap();
-        let bob = agent_by_name(&conn, &get_or_create_team(&conn, "team").unwrap(), "bob").unwrap();
         let inbox = inbox_messages(&conn, &bob.agent_id, true, 10).unwrap();
         assert_eq!(inbox[0]["kind"], "context");
         let context_id = inbox[0]["context_id"].as_str().unwrap();
@@ -3615,32 +4005,12 @@ mod tests {
     #[test]
     fn send_as_context_requires_file() {
         let (_dir, conn) = test_conn();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "alice".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "bob".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
+        current_test_session(&conn, "alice");
+        named_test_session(&conn, "bob-require-file-session", "bob");
         let err = cmd_send(
             &conn,
             SendArgs {
-                agent: "bob".into(),
+                session: "bob".into(),
                 message: vec![],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -3662,58 +4032,25 @@ mod tests {
     }
 
     #[test]
-    fn actas_role_lock_rejects_other_live_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let project = dir.path().to_path_buf();
-        let (_db_dir, conn) = test_conn();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "alice".into(),
-                runtime: Some(Runtime::Shell),
-                project: Some(project.clone()),
-                json: false,
-            },
-        )
-        .unwrap();
-        let project = project_path(Some(project)).unwrap();
-        let identity = identities_for_project(&conn, &project).unwrap().remove(0);
-        claim_role_lock(&conn, &identity, &project, Some("session-a")).unwrap();
-        let err = claim_role_lock(&conn, &identity, &project, Some("session-b")).unwrap_err();
-        assert!(err.to_string().contains("role_locked"));
-        refresh_role_lock(&conn, &identity, &project, "session-a").unwrap();
+    fn session_alias_rejects_conflicts() {
+        let (_dir, conn) = test_conn();
+        let project = test_project();
+        let first = named_test_session(&conn, "session-a", "alice");
+        let second = named_test_session(&conn, "session-b", "bob");
+        assert_ne!(first.agent_id, second.agent_id);
+        let err = set_session_alias(&conn, &project, &second.agent_id, "alice").unwrap_err();
+        assert!(err.to_string().contains("session_alias_taken"));
     }
 
     #[test]
     fn monitor_delivery_marks_messages_read() {
         let (_dir, conn) = test_conn();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "alice".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "bob".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
+        current_test_session(&conn, "alice");
+        let bob = named_test_session(&conn, "bob-monitor-session", "bob");
         cmd_send(
             &conn,
             SendArgs {
-                agent: "bob".into(),
+                session: "bob".into(),
                 message: vec!["stream me".into()],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -3731,13 +4068,54 @@ mod tests {
             "message",
         )
         .unwrap();
-        let project = project_path(None).unwrap();
-        let identities = monitor_identities(&conn, &project, "shell", Some("bob"), None).unwrap();
+        let identities = vec![bob.clone()];
         assert_eq!(
             deliver_monitor_messages(&conn, &identities, false).unwrap(),
             1
         );
-        let bob = agent_by_name(&conn, &get_or_create_team(&conn, "team").unwrap(), "bob").unwrap();
+        assert!(
+            inbox_messages(&conn, &bob.agent_id, true, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn notify_without_file_reads_inbox_and_marks_messages_read() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "alice");
+        let bob = named_test_session(&conn, "bob-notify-session", "bob");
+        cmd_send(
+            &conn,
+            SendArgs {
+                session: "bob".into(),
+                message: vec!["notify me".into()],
+                as_agent: Some("alice".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        cmd_notify(
+            &conn,
+            NotifyArgs {
+                project: None,
+                runtime: Some(Runtime::Shell),
+                session_id: Some("bob-notify-session".into()),
+                json: false,
+            },
+        )
+        .unwrap();
         assert!(
             inbox_messages(&conn, &bob.agent_id, true, 10)
                 .unwrap()
@@ -3748,32 +4126,12 @@ mod tests {
     #[test]
     fn inbox_peek_does_not_mark_messages_read() {
         let (_dir, conn) = test_conn();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "alice".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        cmd_join(
-            &conn,
-            JoinArgs {
-                team: "team".into(),
-                agent: "bob".into(),
-                runtime: Some(Runtime::Shell),
-                project: None,
-                json: false,
-            },
-        )
-        .unwrap();
+        current_test_session(&conn, "alice");
+        let bob = named_test_session(&conn, "bob-peek-session", "bob");
         cmd_send(
             &conn,
             SendArgs {
-                agent: "bob".into(),
+                session: "bob".into(),
                 message: vec!["peek me".into()],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -3794,8 +4152,9 @@ mod tests {
         cmd_inbox(
             &conn,
             InboxArgs {
-                as_agent: Some("bob".into()),
+                as_agent: None,
                 project: None,
+                session_id: Some("bob-peek-session".into()),
                 unread: true,
                 all: false,
                 peek: true,
@@ -3805,7 +4164,6 @@ mod tests {
             },
         )
         .unwrap();
-        let bob = agent_by_name(&conn, &get_or_create_team(&conn, "team").unwrap(), "bob").unwrap();
         assert_eq!(
             inbox_messages(&conn, &bob.agent_id, true, 10)
                 .unwrap()
@@ -3815,8 +4173,9 @@ mod tests {
         cmd_inbox(
             &conn,
             InboxArgs {
-                as_agent: Some("bob".into()),
+                as_agent: None,
                 project: None,
+                session_id: Some("bob-peek-session".into()),
                 unread: true,
                 all: false,
                 peek: false,
@@ -3851,7 +4210,7 @@ mod tests {
         let hook_path = project.join(".codex/hooks.json");
         let content = fs::read_to_string(&hook_path).unwrap();
         assert!(content.contains("handoff"));
-        assert!(content.contains("inbox"));
+        assert!(content.contains("notify"));
         assert!(content.contains("--project"));
 
         cmd_mode(
@@ -3931,7 +4290,7 @@ mod tests {
         let content = fs::read_to_string(&hook_path).unwrap();
         assert!(content.contains("SessionStart"));
         assert!(content.contains("\"Stop\""));
-        assert!(content.contains("inbox --json --project"));
+        assert!(content.contains("notify --json --project"));
     }
 
     #[test]
@@ -3972,7 +4331,7 @@ mod tests {
         assert!(
             error_hint("multiple_identities: use --as <agent>")
                 .unwrap()
-                .contains("handoff actas")
+                .contains("handoff sessions")
         );
         assert!(
             error_hint("context_capture_failed: provide input")
