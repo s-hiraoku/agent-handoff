@@ -209,6 +209,37 @@ server.tool(
 );
 
 server.tool(
+  "handoff_delegate",
+  "Delegate a task to another agent and optionally wait for the result.",
+  {
+    agent: z.string(),
+    task: z.string().optional(),
+    stdin: z.string().optional(),
+    gitDiff: z.boolean().optional(),
+    file: z.string().optional(),
+    contextId: z.string().optional(),
+    wait: z.boolean().optional(),
+    asAgent: z.string().optional(),
+    subject: z.string().optional(),
+    timeout: z.number().int().positive().optional(),
+    project: z.string().optional()
+  },
+  async ({ agent, task, stdin, gitDiff, file, contextId, wait, asAgent, subject, timeout, project }) => {
+    const args = ["delegate", agent, "--json"];
+    if (task) args.push("--task", task);
+    if (stdin) args.push("--stdin");
+    if (gitDiff) args.push("--git-diff");
+    if (file) args.push("--file", file);
+    if (contextId) args.push("--context", contextId);
+    if (wait) args.push("--wait");
+    if (asAgent) args.push("--as", asAgent);
+    if (subject) args.push("--subject", subject);
+    if (timeout) args.push("--timeout", String(timeout));
+    return textResult(await runHandoff(args, stdin, project));
+  }
+);
+
+server.tool(
   "handoff_status",
   "Show one job status or recent jobs.",
   {

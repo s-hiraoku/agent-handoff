@@ -37,7 +37,7 @@ wait_for_state() {
 }
 
 echo "== init/join/actas =="
-"$bin" --version | grep -Fx "handoff 0.2.0" >/dev/null
+"$bin" --version | grep -Fx "handoff 0.3.0" >/dev/null
 "$bin" init >/dev/null
 "$bin" join demo lead --runtime shell >/dev/null
 "$bin" join demo reviewer --runtime shell >/dev/null
@@ -105,15 +105,19 @@ wait_for_state "$job_id" succeeded
 quick_timeout_id="$("$bin" run reviewer --task 'printf quick' --timeout 5 --as lead --json | json_get '["job_id"]')"
 wait_for_state "$quick_timeout_id" succeeded
 
+echo "== delegate =="
+"$bin" delegate reviewer --task 'printf "delegated: %s\n" "$HANDOFF_TASK"' --wait --as lead | grep "delegated:" >/dev/null
+printf 'stdin delegate context\n' | "$bin" delegate reviewer --task 'printf "%s\n" "$HANDOFF_CONTEXT"' --stdin --wait --as lead | grep "stdin delegate context" >/dev/null
+
 echo "== retry =="
 retry_id="$("$bin" retry "$job_id" --json | json_get '["job_id"]')"
 "$bin" status "$retry_id" --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["job"]["retry_of_job_id"]'
 
 echo "== blocked non-shell runtime =="
-"$bin" join demo codexbot --runtime codex >/dev/null
-blocked_id="$("$bin" run codexbot --task "review this" --as lead --json | json_get '["job_id"]')"
+"$bin" join demo geminibot --runtime gemini >/dev/null
+blocked_id="$("$bin" run geminibot --task "review this" --as lead --json | json_get '["job_id"]')"
 wait_for_state "$blocked_id" blocked
-"$bin" status "$blocked_id" | grep "HANDOFF_RUNTIME_CMD_CODEX" >/dev/null
+"$bin" status "$blocked_id" | grep "HANDOFF_RUNTIME_CMD_GEMINI" >/dev/null
 
 echo "== timeout =="
 timeout_id="$("$bin" run reviewer --task 'sleep 2' --timeout 1 --as lead --json | json_get '["job_id"]')"
