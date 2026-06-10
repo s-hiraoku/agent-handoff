@@ -1015,7 +1015,7 @@ fn cmd_active(conn: &Connection, args: ProjectArgs) -> Result<()> {
 
 fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()> {
     let project = project_path(None)?;
-    let sender = current_session(conn, &project, None, None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
     let recipient = session_by_name(conn, &project, &args.session)?;
     let created_context = create_send_context_if_requested(conn, &sender, &args)?;
     let context_id = args.context.as_deref().or(created_context.as_deref());
@@ -1059,7 +1059,7 @@ fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()>
 fn cmd_reply(conn: &Connection, args: ReplyArgs) -> Result<()> {
     let body = read_message_body(&args.message, args.stdin, args.file.as_deref(), None)?;
     let project = project_path(None)?;
-    let sender = current_session(conn, &project, None, None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
     let recipient_id = reply_recipient(conn, &args.thread_id, &sender.agent_id)?;
     let message_id = create_message(
         conn,
@@ -1223,8 +1223,24 @@ fn cmd_notify(conn: &Connection, args: NotifyArgs) -> Result<()> {
     let identity = current_session(conn, &project, Some(runtime.as_str()), Some(&session_key))?;
     let path = notify_path(&project, &session_key)?;
     if !path.exists() {
+        let messages = inbox_messages(conn, &identity.agent_id, true, DEFAULT_LIMIT)?;
+        for message in &messages {
+            let message_id = message["id"].as_str().unwrap_or_default();
+            mark_message_read(conn, &identity, message_id)?;
+        }
         if args.json {
-            print_json(json!({"ok": true, "messages": []}));
+            print_json(
+                json!({"ok": true, "messages": messages, "marked_read": true, "source": "inbox"}),
+            );
+        } else if messages.is_empty() {
+            println!("No notifications");
+        } else {
+            let session = NotifySession {
+                agent_id: identity.agent_id,
+                session_key,
+                label: identity.agent,
+            };
+            print!("{}", notify_markdown(&session, &messages));
         }
         return Ok(());
     }
@@ -1314,7 +1330,7 @@ fn cmd_context(conn: &Connection, args: ContextArgs) -> Result<()> {
 
 fn cmd_context_create(conn: &Connection, args: ContextCreateArgs) -> Result<()> {
     let project = project_path(None)?;
-    let identity = current_session(conn, &project, None, None)?;
+    let identity = sender_session(conn, &project, args.as_agent.as_deref())?;
     let context_id = create_context(conn, &identity, args.title.as_deref())?;
     add_context_inputs(
         conn,
@@ -1380,7 +1396,7 @@ fn cmd_context_list(conn: &Connection, args: JsonArgs) -> Result<()> {
 
 fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
     let project = project_path(None)?;
-    let sender = current_session(conn, &project, None, None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
     let target = profile_by_name(conn, &project, &args.profile)?;
     let job_id = create_run_job(
         conn,
@@ -1413,7 +1429,7 @@ fn cmd_run(conn: &Connection, args: RunArgs) -> Result<()> {
 
 fn cmd_delegate(conn: &Connection, args: DelegateArgs) -> Result<()> {
     let project = project_path(None)?;
-    let sender = current_session(conn, &project, None, None)?;
+    let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
     let target = profile_by_name(conn, &project, &args.profile)?;
     let task = match (args.task.as_deref(), target.runtime.as_str()) {
         (Some(task), _) => task,
@@ -2252,6 +2268,35 @@ fn session_identity_by_key(
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn sender_session(conn: &Connection, project: &str, explicit: Option<&str>) -> Result<Identity> {
+    if let Some(name) = explicit.filter(|value| !value.trim().is_empty()) {
+        return session_identity_by_name(conn, project, name);
+    }
+    current_session(conn, project, None, None)
+}
+
+fn session_identity_by_name(conn: &Connection, project: &str, name: &str) -> Result<Identity> {
+    conn.query_row(
+        "select s.team_id, t.name, s.agent_id, coalesce(s.alias, a.name), s.runtime
+         from sessions s
+         join teams t on t.id=s.team_id
+         join agents a on a.id=s.agent_id
+         where s.project_path=?1 and (s.session_key=?2 or s.alias=?2 or a.name=?2)",
+        params![project, name],
+        |row| {
+            Ok(Identity {
+                team_id: row.get(0)?,
+                team: row.get(1)?,
+                agent_id: row.get(2)?,
+                agent: row.get(3)?,
+                runtime: row.get(4)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| anyhow!("unknown_session: {name}"))
 }
 
 fn session_by_name(conn: &Connection, project: &str, name: &str) -> Result<AgentRef> {
@@ -3792,6 +3837,38 @@ mod tests {
     }
 
     #[test]
+    fn send_honors_explicit_sender_session() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "lead");
+        named_test_session(&conn, "reviewer-session", "reviewer");
+        let observer = named_test_session(&conn, "observer-session", "observer");
+        cmd_send(
+            &conn,
+            SendArgs {
+                session: "observer".into(),
+                message: vec!["from reviewer".into()],
+                as_agent: Some("reviewer".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        let inbox = inbox_messages(&conn, &observer.agent_id, true, 10).unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0]["from"], "reviewer");
+    }
+
+    #[test]
     fn context_file_capture_hashes_content() {
         let (_dir, conn) = test_conn();
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -3996,6 +4073,49 @@ mod tests {
             deliver_monitor_messages(&conn, &identities, false).unwrap(),
             1
         );
+        assert!(
+            inbox_messages(&conn, &bob.agent_id, true, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn notify_without_file_reads_inbox_and_marks_messages_read() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "alice");
+        let bob = named_test_session(&conn, "bob-notify-session", "bob");
+        cmd_send(
+            &conn,
+            SendArgs {
+                session: "bob".into(),
+                message: vec!["notify me".into()],
+                as_agent: Some("alice".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        cmd_notify(
+            &conn,
+            NotifyArgs {
+                project: None,
+                runtime: Some(Runtime::Shell),
+                session_id: Some("bob-notify-session".into()),
+                json: false,
+            },
+        )
+        .unwrap();
         assert!(
             inbox_messages(&conn, &bob.agent_id, true, 10)
                 .unwrap()
