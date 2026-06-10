@@ -14,19 +14,19 @@ function projectCwd(project) {
   return path.resolve(project || process.env.HANDOFF_PROJECT || process.cwd());
 }
 
-function handoffTimeoutMs() {
-  const timeoutMs = Number(process.env.HANDOFF_MCP_TIMEOUT_MS || DEFAULT_HANDOFF_TIMEOUT_MS);
+function handoffTimeoutMs(overrideMs) {
+  const timeoutMs = Number(overrideMs || process.env.HANDOFF_MCP_TIMEOUT_MS || DEFAULT_HANDOFF_TIMEOUT_MS);
   return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_HANDOFF_TIMEOUT_MS;
 }
 
-function runHandoff(args, input, project) {
+function runHandoff(args, input, project, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(HANDOFF_BIN, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
       cwd: projectCwd(project)
     });
-    const timeoutMs = handoffTimeoutMs();
+    const timeoutMs = handoffTimeoutMs(options.timeoutMs);
 
     let stdout = "";
     let stderr = "";
@@ -235,7 +235,8 @@ server.tool(
     if (asAgent) args.push("--as", asAgent);
     if (subject) args.push("--subject", subject);
     if (timeout) args.push("--timeout", String(timeout));
-    return textResult(await runHandoff(args, stdin, project));
+    const timeoutMs = wait && timeout ? (timeout * 1000) + 5000 : undefined;
+    return textResult(await runHandoff(args, stdin, project, { timeoutMs }));
   }
 );
 

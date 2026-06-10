@@ -2744,6 +2744,7 @@ fn append_event(
 enum AdapterKind {
     Shell,
     BuiltInJson,
+    CodexJson,
 }
 
 #[derive(Debug)]
@@ -2778,7 +2779,7 @@ fn adapter_command(runtime: &str, agent_name: &str, task: &str) -> Option<Adapte
         }),
         "codex" => Some(AdapterCommand {
             command: r#"codex exec "$HANDOFF_PROMPT" --json"#.to_string(),
-            kind: AdapterKind::BuiltInJson,
+            kind: AdapterKind::CodexJson,
         }),
         _ => None,
     }
@@ -2795,7 +2796,10 @@ fn agent_prompt(task: &str, context: &str) -> String {
 }
 
 fn adapter_result_body(adapter: &AdapterCommand, stdout: &str) -> String {
-    if adapter.kind == AdapterKind::BuiltInJson {
+    if matches!(
+        adapter.kind,
+        AdapterKind::BuiltInJson | AdapterKind::CodexJson
+    ) {
         extract_json_result_text(stdout).unwrap_or_else(|| stdout.to_string())
     } else {
         stdout.to_string()
@@ -2808,11 +2812,36 @@ fn extract_json_result_text(stdout: &str) -> Option<String> {
     {
         return Some(text);
     }
-    stdout
+    let parsed_lines = stdout
         .lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find_map(|value| extract_json_text_field(&value))
+        .collect::<Vec<_>>();
+    parsed_lines
+        .iter()
+        .find_map(extract_agent_message_text)
+        .or_else(|| {
+            parsed_lines
+                .iter()
+                .find(|value| !looks_like_codex_event(value))
+                .and_then(extract_json_text_field)
+        })
+}
+
+fn extract_agent_message_text(value: &Value) -> Option<String> {
+    let item = value.get("item").unwrap_or(value);
+    if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+        return extract_json_text_field(item);
+    }
+    None
+}
+
+fn looks_like_codex_event(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|event_type| event_type.contains('.'))
+        || value.get("item").is_some()
 }
 
 fn extract_json_text_field(value: &Value) -> Option<String> {
@@ -3394,6 +3423,33 @@ mod tests {
             extract_json_result_text(jsonl).as_deref(),
             Some("final text")
         );
+    }
+
+    #[test]
+    fn json_adapter_result_prefers_codex_agent_message_jsonl() {
+        let jsonl = concat!(
+            r#"{"type":"item.completed","item":{"type":"agent_message","content":[{"type":"text","text":"final answer"}]}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"tool_result","message":"warning payload"}}"#,
+            "\n",
+            r#"{"type":"turn.completed"}"#,
+            "\n",
+        );
+        assert_eq!(
+            extract_json_result_text(jsonl).as_deref(),
+            Some("final answer")
+        );
+    }
+
+    #[test]
+    fn json_adapter_result_ignores_codex_non_answer_jsonl() {
+        let jsonl = concat!(
+            r#"{"type":"item.completed","item":{"type":"tool_result","message":"warning payload"}}"#,
+            "\n",
+            r#"{"type":"turn.completed"}"#,
+            "\n",
+        );
+        assert_eq!(extract_json_result_text(jsonl), None);
     }
 
     #[test]
