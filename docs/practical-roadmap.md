@@ -27,11 +27,27 @@ inbox にメッセージは溜まるが、Claude Code 等のエージェント�
 結果として「送ったのに相手が永遠に気づかない」が標準動作になる。
 体感的な「使えない」の最大要因。
 
-### 1.3 `actas` による手動の役割切り替えが摩擦そのもの
+### 1.3 「役割(role)」概念そのものが過剰
 
-人間が `handoff actas lead` / `handoff actas reviewer` を切り替えながら使う設計は、
-デモはできても日常運用に耐えない。セッション ID(`CLAUDE_CODE_SESSION_ID` 等)からの
-自動推定は現状 lease 取得にしか使われていない。
+`handoff join demo reviewer` で作られる role は、性質の違う3つの機能を1つの概念に
+詰め込んでいる。
+
+1. **実行プロファイル** — reviewer をどのランタイム・モデル・プロンプト・権限で動かすか
+2. **宛先(アドレス)** — メッセージをどの inbox に届けるか
+3. **送信者の人格切り替え** — `actas` で「いま自分は誰か」を選ぶ
+
+このうち 3 は純粋なコストで、価値を生んでいない。人間が `handoff actas lead` /
+`handoff actas reviewer` を切り替えながら使う設計は、デモはできても日常運用に耐えない。
+摩擦の根本原因は actas の操作コストではなく、**そもそも送信者に名前を付けて
+切り替えさせる必要がない**ことにある。
+
+team / join / inbox という語彙は agmsg 由来で、複数の「人」が協調するメタファーだが、
+LLM エージェントでは役割の演じ分けはアドレッシング層ではなく**プロンプトの仕事**である。
+「reviewer らしさ」はプロファイルのシステムプロンプトに書けばよく、メッセージ基盤が
+役割を知っている必要はない。
+
+この分析に基づき、本仕様では role を **profile(委譲用の実行テンプレート)** と
+**session(対話用の宛先)** に分離・解体する(P1-1)。
 
 ### 1.4 プリミティブの集合であって、ワークフローがない
 
@@ -46,7 +62,7 @@ inbox にメッセージは溜まるが、Claude Code 等のエージェント�
 |----|-----------|
 | US1(委譲) | Claude Code セッション内から「この diff を reviewer に見せて結果をもらう」が1コマンド・同期で完結する |
 | US2(並行協調) | 2つの生きたエージェントセッションが、相手の応答に数秒以内に気づいて会話を継続できる |
-| US3(ゼロ設定) | 新しいプロジェクトで `handoff setup claude-code` 一発で、MCP・フック・identity が全部入る |
+| US3(ゼロ設定) | 新しいプロジェクトで `handoff setup claude-code` 一発で、MCP・フック・セッション登録が全部入る |
 
 ## 3. 提案仕様(優先度順)
 
@@ -54,19 +70,22 @@ inbox にメッセージは溜まるが、Claude Code 等のエージェント�
 
 `HANDOFF_AGENT_CMD_*` の手組みを不要にし、主要ヘッドレス CLI をファーストクラスのランタイムにする。
 
+エージェントの起動方法は identity ではなく **profile**(inbox も lease も持たない
+実行テンプレート)として定義する。
+
 ```sh
-handoff join demo reviewer --runtime claude-code   # 内部で `claude -p` を使う
-handoff join demo fixer    --runtime codex          # 内部で `codex exec`
+handoff profile create reviewer --runtime claude-code --prompt-file reviewer.md
+handoff profile create fixer    --runtime codex
 ```
 
-`handoff run reviewer --task "..."` 実行時、ランタイムに応じて:
+`handoff run reviewer --task "..."` 実行時、profile のランタイムに応じて:
 
 - `claude-code` → `claude -p "$PROMPT" --output-format json` を spawn
 - `codex` → `codex exec "$PROMPT" --json`
-- タスク本文 + 添付 context を1つのプロンプトに合成して渡す
+- タスク本文 + 添付 context + profile のシステムプロンプトを1つのプロンプトに合成して渡す
 - stdout の JSON から結果テキストを抽出して `handoff result` に格納
-- `--model` / `--allowed-tools` / `--cwd` 等のランタイムオプションは team 設定として永続化
-  (`handoff config agent reviewer --set model=...`)
+- `--model` / `--allowed-tools` / `--cwd` 等のランタイムオプションは profile に永続化
+  (`handoff profile set reviewer model=...`)
 
 これにより「エージェントにハンドオフする」がツール単体で成立する。
 
@@ -87,20 +106,40 @@ git diff | handoff delegate reviewer --stdin --wait --timeout 300
 呼び出し側エージェントから見ると「サブエージェント実行」と同じメンタルモデルになり、
 MCP ツールとしても `delegate` 1つを覚えれば使える状態になる。
 
-### P1-1: identity の自動化(`actas` の格下げ)
+### P1-1: role 概念の解体 — profile と session への分離
 
-- `handoff join --auto`: セッション環境変数(`CLAUDE_CODE_SESSION_ID` 等)から identity を
-  自動生成・自動 bind。以後そのセッションでは `actas` 不要。
-- 送信時に active role が未設定なら、セッション ID に bind 済みの role を自動選択。
-  曖昧な場合のみエラー。
-- `actas` は互換のため残すが、ドキュメント上は「手動オーバーライド」に格下げ。
+1.3 の分析に基づき、role を2つの直交する概念に置き換える。
+
+- **profile(委譲用)**: P0-1 で定義した実行テンプレート。inbox も lease も持たない。
+- **session(対話用)**: 生きたエージェントセッションそのものが宛先。起動時に
+  セッション環境変数(`CLAUDE_CODE_SESSION_ID` 等)から自動登録され、`handoff sessions`
+  で一覧できる。名前は人間が読みやすくするための**任意のエイリアス**に過ぎない。
+  host 固有のセッション ID が無い MCP サーバーや通常のターミナルでは、
+  `handoff` がプロジェクトローカルな fallback session ID を生成して永続化し、
+  以後の CLI/MCP 呼び出しで同じ「いまのセッション」として再利用する。
+  `HANDOFF_SESSION_ID` が明示されている場合はそれを最優先し、MCP wrapper は必要に応じて
+  生成済み fallback ID を子プロセス環境へ渡せるようにする。
+
+CLI の変更:
+
+- `join` / `actas` / `drop` / `rename-team` を廃止(deprecation 期間後に削除)
+- 送信者は常に「いまのセッション」で自動決定。曖昧さは原理的に発生しない
+- 宛先はセッション(またはそのエイリアス)を指定: `handoff to <session|alias> <message>`
+
+トレードオフ: セッションをまたぐ永続的な宛先(「reviewer 宛に送っておけば、次に
+reviewer セッションが立ち上がった時に読む」)は失われる。このユースケースが実際に
+必要になった場合は「エイリアスに inbox を持たせる」形で後付けできるため、
+先回りして概念を増やすことはしない。
+
+学習コストの効果: 覚える概念が「team / agent / actas / lease」の4つから
+「profile(委譲用)/ session(対話用)」の2つに減る。
 
 ### P1-2: 配信の信頼性 — `handoff daemon` + 通知ファイル
 
 turn フック頼みをやめ、軽量デーモンでプッシュ配信に寄せる。
 
 - `handoff daemon` がプロジェクト単位で SQLite を watch し、新着メッセージを
-  `.handoff/notify/<agent>.md` に書き出す。
+  `.handoff/notify/<session>.md` に書き出す。
 - Claude Code 向けは `UserPromptSubmit` / `Stop` 両フックで notify ファイルの有無をチェックし、
   あれば additionalContext として注入(現行の Stop のみより発火機会が増える)。
 - `handoff monitor` は現行どおり残すが、daemon が起動を肩代わりする
@@ -116,7 +155,7 @@ handoff setup claude-code
 
 これ1つで以下を実行する:
 
-- `init` + `join --auto`
+- `init` + セッションの自動登録(P1-1 の session 概念。join 操作は存在しない)
 - MCP サーバー登録(`.mcp.json` への追記)
 - `mode both` 相当のフック設置
 - 使い方を書いた skill(`.claude/skills/handoff/SKILL.md`)の配置
@@ -137,7 +176,7 @@ handoff setup claude-code
 | バージョン | 内容 | 達成されるストーリー |
 |-----------|------|---------------------|
 | v0.3 | P0-1 ランタイムアダプタ + P0-2 `delegate` | US1: 1コマンド委譲 |
-| v0.4 | P1-1 auto identity + P1-2 daemon 配信 | US2: 双方向のリアルタイム協調 |
+| v0.4 | P1-1 role 解体(profile / session 分離)+ P1-2 daemon 配信 | US2: 双方向のリアルタイム協調 |
 | v0.5 | P2-1 `setup` + skill 配布 + P2-2 `doctor` | US3: ゼロ設定 |
 
 ## 5. 設計判断のポイント
@@ -182,7 +221,7 @@ local-first の設計は維持しつつ、トランスポートを抽象化す�
 
 README 自身が「sandbox ではない」と明記している点を解消する段階。
 
-- エージェントごとの権限プロファイル: `handoff config agent reviewer --allow read-only`
+- profile ごとの権限設定: `handoff profile set reviewer allow=read-only`
   (claude-code ランタイムなら `--allowedTools` に変換して強制)
 - 監査ログ: 誰がいつ何を委譲し、何が実行されたかを `handoff audit` で追跡
 - `--cmd` / adapter コマンドの allowlist 化
@@ -199,8 +238,8 @@ README 自身が「sandbox ではない」と明記している点を解消す�
 - ストレージスキーマと CLI の互換性保証(semver 凍結)、スキーママイグレーションの自動化
 - カスタムランタイムのプラグイン API
   (任意のエージェント CLI を adapter として登録する公式手順)
-- ロールテンプレート配布: `handoff join demo reviewer --template security-auditor` のように
-  プロンプト+権限+モデル設定をプリセット化
+- profile テンプレート配布: `handoff profile install security-auditor` のように
+  プロンプト+権限+モデル設定をプリセットとして取り込み可能にする
 
 ### 拡張ロードマップの優先順位
 
