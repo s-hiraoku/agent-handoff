@@ -52,16 +52,16 @@ reference_search: true
           <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff inbox --peek" data-use="Preview unread messages without consuming them." data-recovery="Run handoff inbox when ready to mark messages read.">
             <td><code>handoff inbox --peek</code></td>
             <td>Preview unread messages without marking them read.</td>
-            <td><code>--as</code> <code>--all</code> <code>--limit</code> <code>--json</code></td>
+            <td><code>--session-id</code> <code>--all</code> <code>--limit</code> <code>--json</code></td>
             <td>Messages plus <code>marked_read</code> in JSON.</td>
             <td>Run <code>handoff inbox</code> when ready to consume.</td>
           </tr>
-          <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff to reviewer" data-use="Send a direct message or context handoff." data-recovery="Use handoff agents to confirm the recipient exists.">
-            <td><code>handoff to &lt;agent&gt; "message"</code></td>
-            <td>Send a concise message to another local agent.</td>
-            <td><code>--as</code> <code>--team</code> <code>--subject</code> <code>--thread</code></td>
+          <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff to reviewer" data-use="Send a direct message or context handoff." data-recovery="Use handoff sessions to confirm the recipient exists.">
+            <td><code>handoff to &lt;session|alias&gt; "message"</code></td>
+            <td>Send a concise message to another live session.</td>
+            <td><code>--subject</code> <code>--thread</code> <code>--context</code></td>
             <td>Message id, or JSON with <code>message_id</code>.</td>
-            <td>Use <code>handoff agents</code> for unknown recipients.</td>
+            <td>Use <code>handoff sessions</code> for unknown recipients.</td>
           </tr>
           <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff reply" data-use="Continue an existing thread." data-recovery="Use handoff history to locate the thread id.">
             <td><code>handoff reply &lt;thread-id&gt; "message"</code></td>

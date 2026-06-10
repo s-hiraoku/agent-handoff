@@ -49,18 +49,13 @@ export HANDOFF_HOME=/tmp/my-handoff
 
 ## Quick Start
 
-Create two local agent identities in the same project:
+Create a live session alias and a delegation profile:
 
 ```sh
 handoff init
-handoff join demo lead --runtime shell
-handoff join demo reviewer --runtime shell
-```
-
-Select the sender:
-
-```sh
-handoff actas lead
+handoff session alias lead
+HANDOFF_SESSION_ID=reviewer-session handoff session alias reviewer
+handoff profile create reviewer --runtime shell
 ```
 
 Send a message:
@@ -72,8 +67,7 @@ handoff to reviewer "Please review the current diff."
 Read as the recipient:
 
 ```sh
-handoff actas reviewer
-handoff inbox
+HANDOFF_SESSION_ID=reviewer-session handoff inbox
 ```
 
 Preview without marking messages read:
@@ -92,7 +86,6 @@ handoff to reviewer --file notes.md
 Create and send context:
 
 ```sh
-handoff actas lead
 CTX=$(handoff context create --git-diff --json | jq -r .context_id)
 handoff to reviewer --context "$CTX" --message "Use this diff as context."
 handoff to reviewer --git-diff --message "Review this diff."
@@ -136,28 +129,30 @@ HANDOFF_PROMPT
 
 ## Core Commands
 
-Identity and teams:
+Profiles and sessions:
 
 ```sh
-handoff join <team> <agent> --runtime shell
+handoff setup claude-code
+handoff profile create <profile> --runtime shell
+handoff profile list
+handoff profile set <profile> model=...
+handoff session alias <alias>
+handoff sessions
 handoff whoami
-handoff actas <agent>
 handoff active
-handoff drop <agent>
-handoff agents
-handoff rename-team <old> <new>
 ```
 
-When the host runtime provides `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, or `CODEX_SESSION_ID`, `actas` claims a lease for that role so another live session cannot accidentally consume the same agent's messages. Without a stable session id, `actas` still selects the active role with a project-local lease.
+The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable address.
 
 Messaging:
 
 ```sh
-handoff send <agent> <message>
-handoff to <agent> <message>
-handoff post <agent> <message>
+handoff send <session|alias> <message>
+handoff to <session|alias> <message>
+handoff post <session|alias> <message>
 handoff reply <thread-id> <message>
 handoff inbox
+handoff notify
 handoff history
 handoff show <message-id>
 ```
@@ -177,10 +172,10 @@ handoff context list
 Jobs:
 
 ```sh
-handoff run <agent> --task <text>
-handoff run <agent> --task <text> --timeout 30
-handoff delegate <agent> --task <text> --wait
-handoff delegate <agent> --stdin --task <text> --wait
+handoff run <profile> --task <text>
+handoff run <profile> --task <text> --timeout 30
+handoff delegate <profile> --task <text> --wait
+handoff delegate <profile> --stdin --task <text> --wait
 handoff status [job-id]
 handoff logs <job-id>
 handoff logs <job-id> --follow
@@ -197,10 +192,11 @@ handoff mode turn
 handoff mode monitor --runtime claude-code
 handoff mode both --runtime claude-code
 handoff mode off
-handoff monitor --as reviewer --runtime shell
+handoff daemon
+handoff monitor --runtime shell
 ```
 
-`mode turn` writes a project-local inbox hook for supported runtimes. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
+`mode turn` writes a project-local notification hook for supported runtimes. `handoff daemon` writes `.handoff/notify/<session>.md` files for live sessions, and `handoff notify` consumes the current session notification file. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
 
 ## JSON Output
 
@@ -209,7 +205,8 @@ Read commands support `--json` for scripting and agent integration:
 ```sh
 handoff inbox --json
 handoff history --json
-handoff agents --json
+handoff sessions --json
+handoff profile list --json
 handoff context show <context-id> --json
 handoff status <job-id> --json
 ```

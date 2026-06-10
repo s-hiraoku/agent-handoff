@@ -10,8 +10,8 @@ Use this skill when the user wants to send information to another coding agent, 
 ## Requirements
 
 - The `handoff` binary must be installed and available on `PATH`.
-- The current project should be joined with `handoff join <team> <agent>`.
-- If multiple identities exist, use `handoff actas <agent>` or pass `--as <agent>`.
+- The current session should have a readable alias with `handoff session alias <alias>` when it needs to receive messages.
+- Delegated work should target profiles created with `handoff profile create <profile> --runtime <runtime>`.
 
 ## Core Workflow
 
@@ -20,7 +20,7 @@ Check identity:
 ```sh
 handoff whoami
 handoff active
-handoff actas <agent>
+handoff sessions
 ```
 
 Check inbox before starting coordinated work:
@@ -38,13 +38,13 @@ handoff inbox --peek
 Send a concise message:
 
 ```sh
-handoff to <agent> "message"
+handoff to <session|alias> "message"
 ```
 
 Send command output:
 
 ```sh
-some-command 2>&1 | handoff to <agent> --stdin --subject "command output"
+some-command 2>&1 | handoff to <session|alias> --stdin --subject "command output"
 ```
 
 Create context:
@@ -58,18 +58,18 @@ handoff context create --cmd "command"
 Send context:
 
 ```sh
-handoff to <agent> --context <context-id> --message "Use this context."
-handoff to <agent> --git-diff --message "Review this diff."
-handoff to <agent> --file <path> --as-context --message "Use this file as context."
+handoff to <session|alias> --context <context-id> --message "Use this context."
+handoff to <session|alias> --git-diff --message "Review this diff."
+handoff to <session|alias> --file <path> --as-context --message "Use this file as context."
 ```
 
 Run background work:
 
 ```sh
-handoff delegate <agent> --task "task text" --context <context-id> --wait
-handoff delegate <agent> --stdin --task "review this context" --wait
-handoff run <agent> --task "task text" --context <context-id>
-handoff run <agent> --task "task text" --timeout 30
+handoff delegate <profile> --task "task text" --context <context-id> --wait
+handoff delegate <profile> --stdin --task "review this context" --wait
+handoff run <profile> --task "task text" --context <context-id>
+handoff run <profile> --task "task text" --timeout 30
 handoff status <job-id>
 handoff logs <job-id>
 handoff result <job-id>
@@ -78,12 +78,12 @@ handoff result <job-id>
 ## Agent Behavior
 
 - Prefer `--json` when parsing command output programmatically.
-- For MCP use, set `HANDOFF_PROJECT` or pass the MCP tool `project` argument so identities resolve against the intended repository.
+- For MCP use, set `HANDOFF_PROJECT` or pass the MCP tool `project` argument so sessions and profiles resolve against the intended repository.
 - Keep messages short unless sending context.
 - Use `handoff context create` for large diffs, files, or command output.
 - Use `handoff delegate --wait` when you need a synchronous sub-agent style result.
 - Use `handoff reply <thread-id>` when responding to an existing handoff.
-- Use `handoff monitor --as <agent> --once` for a scriptable one-shot delivery check, or `handoff mode monitor --runtime claude-code` when the host supports persistent Monitor streams.
+- Use `handoff notify` to consume daemon notification files, `handoff daemon` to write them, or `handoff mode monitor --runtime claude-code` when the host supports persistent Monitor streams.
 - Use `handoff inbox --peek` when checking whether work exists without marking messages read.
 - Before assuming another agent ignored a task, check `handoff status` and `handoff logs`.
 - If a job is `blocked`, report the adapter/runtime limitation clearly.
@@ -91,7 +91,8 @@ handoff result <job-id>
 ## Useful Commands
 
 ```sh
-handoff agents
+handoff sessions
+handoff profile list
 handoff history
 handoff context list
 handoff status

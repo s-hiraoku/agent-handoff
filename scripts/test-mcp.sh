@@ -28,9 +28,10 @@ export HANDOFF_BIN="$repo_root/target/debug/handoff"
 
 mkdir -p "$HANDOFF_PROJECT"
 "$HANDOFF_BIN" init >/dev/null
-"$HANDOFF_BIN" join demo lead --runtime shell --project "$HANDOFF_PROJECT" >/dev/null
-"$HANDOFF_BIN" join demo reviewer --runtime shell --project "$HANDOFF_PROJECT" >/dev/null
-"$HANDOFF_BIN" actas lead --project "$HANDOFF_PROJECT" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$HANDOFF_BIN" session alias lead --project "$HANDOFF_PROJECT" >/dev/null
+HANDOFF_SESSION_ID=reviewer-session "$HANDOFF_BIN" session alias reviewer --project "$HANDOFF_PROJECT" >/dev/null
+"$HANDOFF_BIN" profile create reviewer --runtime shell --project "$HANDOFF_PROJECT" >/dev/null
+export HANDOFF_SESSION_ID=lead-session
 
 node smoke.mjs
 

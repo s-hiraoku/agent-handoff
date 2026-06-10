@@ -144,13 +144,15 @@ server.tool(
   "Read the current agent inbox.",
   {
     asAgent: z.string().optional(),
+    sessionId: z.string().optional(),
     all: z.boolean().optional(),
     peek: z.boolean().optional(),
     limit: z.number().int().positive().optional(),
     project: z.string().optional()
   },
-  async ({ asAgent, all, peek, limit, project }) => {
+  async ({ asAgent, sessionId, all, peek, limit, project }) => {
     const args = ["inbox", "--json"];
+    if (sessionId) args.push("--session-id", sessionId);
     if (asAgent) args.push("--as", asAgent);
     if (all) args.push("--all");
     if (peek) args.push("--peek");
