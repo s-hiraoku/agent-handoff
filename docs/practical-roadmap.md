@@ -111,6 +111,11 @@ MCP ツールとしても `delegate` 1つを覚えれば使える状態になる
 - **session(対話用)**: 生きたエージェントセッションそのものが宛先。起動時に
   セッション環境変数(`CLAUDE_CODE_SESSION_ID` 等)から自動登録され、`handoff sessions`
   で一覧できる。名前は人間が読みやすくするための**任意のエイリアス**に過ぎない。
+  host 固有のセッション ID が無い MCP サーバーや通常のターミナルでは、
+  `handoff` がプロジェクトローカルな fallback session ID を生成して永続化し、
+  以後の CLI/MCP 呼び出しで同じ「いまのセッション」として再利用する。
+  `HANDOFF_SESSION_ID` が明示されている場合はそれを最優先し、MCP wrapper は必要に応じて
+  生成済み fallback ID を子プロセス環境へ渡せるようにする。
 
 CLI の変更:
 
