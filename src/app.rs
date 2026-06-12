@@ -18,6 +18,7 @@ use uuid::Uuid;
 const DEFAULT_LIMIT: i64 = 50;
 const SCHEMA_VERSION: i64 = 2;
 const TERMINAL_JOB_STATE_SQL: &str = "'succeeded','failed','cancelled','timeout','blocked'";
+const USER_GLOBAL_TEAM_NAME: &str = "user:global";
 
 #[derive(Parser, Debug)]
 #[command(name = "handoff")]
@@ -127,7 +128,7 @@ enum ProfileCommand {
     #[command(about = "Create or update a delegation profile")]
     Create(ProfileCreateArgs),
     #[command(about = "List delegation profiles for this project")]
-    List(ProjectArgs),
+    List(ProfileListArgs),
     #[command(about = "Set profile options")]
     Set(ProfileSetArgs),
 }
@@ -142,6 +143,18 @@ struct ProfileCreateArgs {
     prompt: Option<String>,
     #[arg(long, help = "Read the system prompt from this file")]
     prompt_file: Option<PathBuf>,
+    #[arg(long = "global", help = "Store this profile in the user-global scope")]
+    global: bool,
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
+    #[arg(long, help = "Print machine-readable JSON")]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct ProfileListArgs {
+    #[arg(long = "global", help = "List only user-global profiles")]
+    global: bool,
     #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
     #[arg(long, help = "Print machine-readable JSON")]
@@ -154,6 +167,8 @@ struct ProfileSetArgs {
     name: String,
     #[arg(help = "Profile settings in key=value form")]
     settings: Vec<String>,
+    #[arg(long = "global", help = "Update this profile in the user-global scope")]
+    global: bool,
     #[arg(long, help = "Use this project path instead of the current directory")]
     project: Option<PathBuf>,
     #[arg(long, help = "Print machine-readable JSON")]
@@ -879,9 +894,15 @@ fn cmd_profile_create(conn: &Connection, args: ProfileCreateArgs) -> Result<()> 
     }
     let runtime = args.runtime.unwrap_or_else(detect_runtime);
     let project = project_path(args.project)?;
-    let team_id = project_team_id(conn, &project)?;
+    let team_id = if args.global {
+        user_global_team_id(conn)?
+    } else {
+        project_team_id(conn, &project)?
+    };
     let agent_id = get_or_create_agent(conn, &team_id, &args.name, runtime.as_str())?;
-    register_project_agent(conn, &team_id, &agent_id, &project, runtime.as_str())?;
+    if !args.global {
+        register_project_agent(conn, &team_id, &agent_id, &project, runtime.as_str())?;
+    }
     upsert_profile_settings(
         conn,
         &agent_id,
@@ -895,31 +916,43 @@ fn cmd_profile_create(conn: &Connection, args: ProfileCreateArgs) -> Result<()> 
         Some(&team_id),
         Some(&agent_id),
         Some(&agent_id),
-        json!({"project": project, "profile": args.name, "runtime": runtime.as_str()}),
+        json!({"project": project, "profile": args.name, "runtime": runtime.as_str(), "scope": profile_scope(args.global)}),
     )?;
     if args.json {
         print_json(
-            json!({"ok": true, "profile": args.name, "runtime": runtime.as_str(), "project": project}),
+            json!({"ok": true, "profile": args.name, "runtime": runtime.as_str(), "project": project, "scope": profile_scope(args.global)}),
         );
     } else {
-        println!("profile {} ({})", args.name, runtime.as_str());
+        println!(
+            "profile {} ({}) [{}]",
+            args.name,
+            runtime.as_str(),
+            profile_scope(args.global)
+        );
     }
     Ok(())
 }
 
-fn cmd_profile_list(conn: &Connection, args: ProjectArgs) -> Result<()> {
+fn cmd_profile_list(conn: &Connection, args: ProfileListArgs) -> Result<()> {
     let project = project_path(args.project)?;
-    let profiles = list_profiles(conn, &project)?;
+    let profiles = if args.global {
+        list_global_profiles(conn)?
+    } else {
+        list_profiles(conn, &project)?
+    };
     if args.json {
-        print_json(json!({"ok": true, "project": project, "profiles": profiles}));
+        print_json(
+            json!({"ok": true, "project": project, "profiles": profiles, "scope": if args.global { "global" } else { "resolved" }}),
+        );
     } else if profiles.is_empty() {
         println!("No profiles");
     } else {
         for profile in profiles {
             println!(
-                "{} ({})",
+                "{} ({}) [{}]",
                 profile["name"].as_str().unwrap_or_default(),
-                profile["runtime"].as_str().unwrap_or_default()
+                profile["runtime"].as_str().unwrap_or_default(),
+                profile["scope"].as_str().unwrap_or("project")
             );
         }
     }
@@ -928,7 +961,11 @@ fn cmd_profile_list(conn: &Connection, args: ProjectArgs) -> Result<()> {
 
 fn cmd_profile_set(conn: &Connection, args: ProfileSetArgs) -> Result<()> {
     let project = project_path(args.project)?;
-    let profile = profile_by_name(conn, &project, &args.name)?;
+    let profile = if args.global {
+        global_profile_by_name(conn, &args.name)?
+    } else {
+        profile_by_name(conn, &project, &args.name)?
+    };
     let mut options = profile_options(conn, &profile.agent_id)?;
     let mut prompt = None;
     let mut prompt_file = None;
@@ -944,7 +981,15 @@ fn cmd_profile_set(conn: &Connection, args: ProfileSetArgs) -> Result<()> {
                     "update agents set runtime=?1, updated_at=?2 where id=?3",
                     params![value, now(), profile.agent_id],
                 )?;
-                register_project_agent(conn, &profile.team_id, &profile.agent_id, &project, value)?;
+                if profile.scope == "project" {
+                    register_project_agent(
+                        conn,
+                        &profile.team_id,
+                        &profile.agent_id,
+                        &project,
+                        value,
+                    )?;
+                }
             }
             _ => {
                 options[key] = Value::String(value.to_string());
@@ -959,9 +1004,9 @@ fn cmd_profile_set(conn: &Connection, args: ProfileSetArgs) -> Result<()> {
         Some(options),
     )?;
     if args.json {
-        print_json(json!({"ok": true, "profile": args.name}));
+        print_json(json!({"ok": true, "profile": args.name, "scope": profile.scope}));
     } else {
-        println!("updated profile {}", args.name);
+        println!("updated profile {} [{}]", args.name, profile.scope);
     }
     Ok(())
 }
@@ -2073,6 +2118,7 @@ struct AgentRef {
     team_id: String,
     agent_id: String,
     runtime: String,
+    scope: String,
 }
 
 #[derive(Debug)]
@@ -2160,6 +2206,14 @@ fn project_team_id(conn: &Connection, project: &str) -> Result<String> {
     let hash = content_hash(project);
     let name = format!("project:{basename}:{}", &hash[..12]);
     get_or_create_team(conn, &name)
+}
+
+fn user_global_team_id(conn: &Connection) -> Result<String> {
+    get_or_create_team(conn, USER_GLOBAL_TEAM_NAME)
+}
+
+fn profile_scope(global: bool) -> &'static str {
+    if global { "global" } else { "project" }
 }
 
 fn register_project_agent(
@@ -2261,6 +2315,26 @@ fn profile_system_prompt(conn: &Connection, agent_id: &str) -> Result<Option<Str
 
 fn list_profiles(conn: &Connection, project: &str) -> Result<Vec<Value>> {
     let team_id = project_team_id(conn, project)?;
+    let mut profiles = list_project_profiles(conn, &team_id, project)?;
+    let project_names = profiles
+        .iter()
+        .filter_map(|profile| profile["name"].as_str().map(ToOwned::to_owned))
+        .collect::<std::collections::HashSet<_>>();
+    profiles.extend(list_global_profiles(conn)?.into_iter().filter(|profile| {
+        profile["name"]
+            .as_str()
+            .is_none_or(|name| !project_names.contains(name))
+    }));
+    profiles.sort_by(|left, right| {
+        left["name"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["name"].as_str().unwrap_or_default())
+    });
+    Ok(profiles)
+}
+
+fn list_project_profiles(conn: &Connection, team_id: &str, project: &str) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
         "select a.name, a.runtime, ps.prompt, ps.prompt_file, ps.options_json, a.created_at
          from agents a
@@ -2278,6 +2352,31 @@ fn list_profiles(conn: &Connection, project: &str) -> Result<Vec<Value>> {
             "prompt_file": row.get::<_, Option<String>>(3)?,
             "options": serde_json::from_str::<Value>(&options_json).unwrap_or_else(|_| json!({})),
             "created_at": row.get::<_, String>(5)?,
+            "scope": "project",
+        }))
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn list_global_profiles(conn: &Connection) -> Result<Vec<Value>> {
+    let team_id = user_global_team_id(conn)?;
+    let mut stmt = conn.prepare(
+        "select a.name, a.runtime, ps.prompt, ps.prompt_file, ps.options_json, a.created_at
+         from agents a
+         join profile_settings ps on ps.agent_id=a.id
+         where a.team_id=?1
+         order by a.name",
+    )?;
+    let rows = stmt.query_map(params![team_id], |row| {
+        let options_json: String = row.get(4)?;
+        Ok(json!({
+            "name": row.get::<_, String>(0)?,
+            "runtime": row.get::<_, String>(1)?,
+            "prompt": row.get::<_, Option<String>>(2)?,
+            "prompt_file": row.get::<_, Option<String>>(3)?,
+            "options": serde_json::from_str::<Value>(&options_json).unwrap_or_else(|_| json!({})),
+            "created_at": row.get::<_, String>(5)?,
+            "scope": "global",
         }))
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -2285,17 +2384,42 @@ fn list_profiles(conn: &Connection, project: &str) -> Result<Vec<Value>> {
 
 fn profile_by_name(conn: &Connection, project: &str, name: &str) -> Result<AgentRef> {
     let team_id = project_team_id(conn, project)?;
-    conn.query_row(
-        "select a.id, a.name, a.runtime from agents a
+    let project_profile = conn
+        .query_row(
+            "select a.id, a.name, a.runtime from agents a
          join profile_settings ps on ps.agent_id=a.id
          join project_registrations pr on pr.agent_id=a.id and pr.team_id=a.team_id
          where a.team_id=?1 and pr.project_path=?2 and a.name=?3",
-        params![team_id, project, name],
+            params![team_id, project, name],
+            |row| {
+                Ok(AgentRef {
+                    team_id: team_id.clone(),
+                    agent_id: row.get(0)?,
+                    runtime: row.get(2)?,
+                    scope: "project".to_string(),
+                })
+            },
+        )
+        .optional()?;
+    match project_profile {
+        Some(profile) => Ok(profile),
+        None => global_profile_by_name(conn, name),
+    }
+}
+
+fn global_profile_by_name(conn: &Connection, name: &str) -> Result<AgentRef> {
+    let team_id = user_global_team_id(conn)?;
+    conn.query_row(
+        "select a.id, a.name, a.runtime from agents a
+         join profile_settings ps on ps.agent_id=a.id
+         where a.team_id=?1 and a.name=?2",
+        params![team_id, name],
         |row| {
             Ok(AgentRef {
                 team_id: team_id.clone(),
                 agent_id: row.get(0)?,
                 runtime: row.get(2)?,
+                scope: "global".to_string(),
             })
         },
     )
@@ -2433,6 +2557,7 @@ fn session_by_name(conn: &Connection, project: &str, name: &str) -> Result<Agent
                 team_id: row.get(0)?,
                 agent_id: row.get(1)?,
                 runtime: row.get(3)?,
+                scope: "project".to_string(),
             })
         },
     )
@@ -2616,7 +2741,7 @@ fn normalize_session_lookup(name: &str) -> (&str, bool) {
 
 fn profile_exists(conn: &Connection, project: &str, name: &str) -> Result<bool> {
     let team_id = project_team_id(conn, project)?;
-    let exists = conn
+    let project_exists = conn
         .query_row(
             "select 1 from agents a
              join profile_settings ps on ps.agent_id=a.id
@@ -2628,7 +2753,22 @@ fn profile_exists(conn: &Connection, project: &str, name: &str) -> Result<bool> 
         )
         .optional()?
         .is_some();
-    Ok(exists)
+    if project_exists {
+        return Ok(true);
+    }
+    let global_team_id = user_global_team_id(conn)?;
+    let global_exists = conn
+        .query_row(
+            "select 1 from agents a
+             join profile_settings ps on ps.agent_id=a.id
+             where a.team_id=?1 and a.name=?2
+             limit 1",
+            params![global_team_id, name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(global_exists)
 }
 
 fn session_display_name(session_key: &str) -> String {
@@ -2645,6 +2785,7 @@ fn agent_by_name(conn: &Connection, team_id: &str, name: &str) -> Result<AgentRe
                 team_id: team_id.to_string(),
                 agent_id: row.get(0)?,
                 runtime: row.get(2)?,
+                scope: "project".to_string(),
             })
         },
     )
@@ -4095,6 +4236,23 @@ mod tests {
                 runtime: Some(Runtime::Shell),
                 prompt: None,
                 prompt_file: None,
+                global: false,
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+    }
+
+    fn global_test_profile(conn: &Connection, name: &str, runtime: Runtime) {
+        cmd_profile_create(
+            conn,
+            ProfileCreateArgs {
+                name: name.into(),
+                runtime: Some(runtime),
+                prompt: None,
+                prompt_file: None,
+                global: true,
                 project: None,
                 json: false,
             },
@@ -4215,6 +4373,7 @@ mod tests {
             ProfileSetArgs {
                 name: "reviewer".into(),
                 settings: vec!["session=@reviewer".into(), "capability=review,docs".into()],
+                global: false,
                 project: None,
                 json: false,
             },
@@ -4248,6 +4407,7 @@ mod tests {
             ProfileSetArgs {
                 name: "reviewer".into(),
                 settings: vec!["session=@reviewer".into(), "capability=review".into()],
+                global: false,
                 project: None,
                 json: false,
             },
@@ -4258,6 +4418,44 @@ mod tests {
         assert_eq!(candidates[0]["profile"], "reviewer");
         assert_eq!(candidates[0]["session"], "@reviewer");
         assert_eq!(candidates[0]["reachability"], "active");
+    }
+
+    #[test]
+    fn global_profile_is_available_from_project_scope() {
+        let (_dir, conn) = test_conn();
+        global_test_profile(&conn, "reviewer", Runtime::Shell);
+
+        let profile = profile_by_name(&conn, &test_project(), "reviewer").unwrap();
+
+        assert_eq!(profile.runtime, "shell");
+        assert_eq!(profile.scope, "global");
+    }
+
+    #[test]
+    fn project_profile_overrides_global_profile_with_same_name() {
+        let (_dir, conn) = test_conn();
+        global_test_profile(&conn, "reviewer", Runtime::Shell);
+        cmd_profile_create(
+            &conn,
+            ProfileCreateArgs {
+                name: "reviewer".into(),
+                runtime: Some(Runtime::Codex),
+                prompt: None,
+                prompt_file: None,
+                global: false,
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+
+        let profile = profile_by_name(&conn, &test_project(), "reviewer").unwrap();
+        let profiles = list_profiles(&conn, &test_project()).unwrap();
+
+        assert_eq!(profile.runtime, "codex");
+        assert_eq!(profile.scope, "project");
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0]["scope"], "project");
     }
 
     #[test]

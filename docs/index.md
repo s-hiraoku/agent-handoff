@@ -104,7 +104,7 @@ description: Practical setup and daily workflow guide for agent-handoff.
           <span class="step-index">1</span>
           <div>
             <h3>Create sessions and profiles</h3>
-            <p>Give live sessions readable aliases and create profiles for delegated work.</p>
+            <p>Give live sessions readable aliases and create project or user-global profiles for delegated work.</p>
             <pre class="command-block"><code>handoff init
 handoff session alias lead
 HANDOFF_SESSION_ID=reviewer-session handoff session alias reviewer

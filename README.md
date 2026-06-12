@@ -59,6 +59,8 @@ handoff profile create reviewer --runtime shell
 handoff profile set reviewer session=@reviewer capability=review
 ```
 
+Use `handoff profile create <profile> --global --runtime <runtime>` for reusable user-global profiles. Project profiles with the same name take precedence.
+
 Send a message:
 
 ```sh
@@ -137,8 +139,11 @@ handoff setup claude-code
 handoff profile create <profile> --runtime shell
 handoff profile create <profile> --runtime codex --prompt-file reviewer.md
 handoff profile create <profile> --runtime copilot
+handoff profile create <profile> --global --runtime codex
 handoff profile list
+handoff profile list --global
 handoff profile set <profile> model=...
+handoff profile set <profile> --global model=...
 handoff profile set reviewer session=@reviewer capability=review
 handoff session alias <alias>
 handoff sessions
@@ -146,7 +151,7 @@ handoff whoami
 handoff active
 ```
 
-The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, `COPILOT_SESSION_ID`, `GITHUB_COPILOT_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable `@alias` address. Profiles keep bare names for background execution; if a session and profile share a name, use `handoff to @alias` for inbox delivery and `handoff delegate <profile>` for worker execution.
+The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, `COPILOT_SESSION_ID`, `GITHUB_COPILOT_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable `@alias` address. Profiles keep bare names for background execution; project profiles are resolved before user-global profiles, and `--global` creates, lists, or updates the reusable user-global scope. If a session and profile share a name, use `handoff to @alias` for inbox delivery and `handoff delegate <profile>` for worker execution.
 
 Messaging:
 
