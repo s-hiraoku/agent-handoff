@@ -1839,30 +1839,37 @@ fn cmd_cancel(conn: &Connection, job_id: &str) -> Result<()> {
 }
 
 fn cmd_retry(conn: &Connection, args: RetryArgs) -> Result<()> {
+    let job_id = create_retry_job(conn, &args.job_id)?;
+    spawn_worker(&job_id)?;
+    if args.json {
+        print_json(json!({"ok": true, "job_id": job_id}));
+    } else {
+        println!("job {job_id}");
+    }
+    Ok(())
+}
+
+fn create_retry_job(conn: &Connection, original_job_id: &str) -> Result<String> {
     let job =
-        job_json(conn, &args.job_id)?.ok_or_else(|| anyhow!("unknown job: {}", args.job_id))?;
-    let task_message_id = job["task_message_id"]
-        .as_str()
-        .ok_or_else(|| anyhow!("job has no task message"))?;
+        job_row(conn, original_job_id)?.ok_or_else(|| anyhow!("unknown job: {original_job_id}"))?;
     let task =
-        message_json(conn, task_message_id)?.ok_or_else(|| anyhow!("missing task message"))?;
-    let target = task["to"]
-        .as_str()
-        .ok_or_else(|| anyhow!("missing target"))?
-        .to_string();
-    let run_args = RunArgs {
-        profile: target,
-        task: task["body"].as_str().unwrap_or_default().to_string(),
-        context: job["context_id"].as_str().map(ToOwned::to_owned),
-        git_diff: false,
-        file: None,
-        timeout: job["timeout_seconds"].as_i64().map(|value| value as u64),
-        as_agent: None,
-        subject: task["subject"].as_str().map(ToOwned::to_owned),
-        json: args.json,
-        retry_of_job_id: Some(args.job_id),
-    };
-    cmd_run(conn, run_args)
+        message_json(conn, &job.task_message_id)?.ok_or_else(|| anyhow!("missing task message"))?;
+    let project = project_path(None)?;
+    let sender = sender_session(conn, &project, None)?;
+    let target = retry_target(&job);
+    create_run_job(
+        conn,
+        &sender,
+        &target,
+        RunJobSpec {
+            task: task["body"].as_str().unwrap_or_default(),
+            context_id: job.context_id.as_deref(),
+            context_inputs: None,
+            subject: task["subject"].as_str(),
+            timeout: job.timeout_seconds.map(|value| value as u64),
+            retry_of_job_id: Some(original_job_id),
+        },
+    )
 }
 
 fn cmd_install_alias(args: InstallAliasArgs) -> Result<()> {
@@ -2130,9 +2137,19 @@ struct JobRow {
     context_id: Option<String>,
     requested_by_agent_id: String,
     target_agent_id: String,
+    target_team_id: String,
     target_agent_name: String,
     runtime: String,
     timeout_seconds: Option<i64>,
+}
+
+fn retry_target(job: &JobRow) -> AgentRef {
+    AgentRef {
+        team_id: job.target_team_id.clone(),
+        agent_id: job.target_agent_id.clone(),
+        runtime: job.runtime.clone(),
+        scope: "preserved".to_string(),
+    }
 }
 
 fn get_or_create_team(conn: &Connection, name: &str) -> Result<String> {
@@ -3340,7 +3357,7 @@ fn context_plaintext(conn: &Connection, context_id: &str) -> Result<String> {
 
 fn job_row(conn: &Connection, job_id: &str) -> Result<Option<JobRow>> {
     conn.query_row(
-        "select j.team_id, t.name, j.thread_id, j.task_message_id, j.context_id, j.requested_by_agent_id, j.target_agent_id, a.name, j.runtime, j.timeout_seconds
+        "select j.team_id, t.name, j.thread_id, j.task_message_id, j.context_id, j.requested_by_agent_id, j.target_agent_id, a.team_id, a.name, j.runtime, j.timeout_seconds
          from jobs j join teams t on t.id=j.team_id join agents a on a.id=j.target_agent_id
          where j.id=?1",
         params![job_id],
@@ -3353,9 +3370,10 @@ fn job_row(conn: &Connection, job_id: &str) -> Result<Option<JobRow>> {
                 context_id: row.get(4)?,
                 requested_by_agent_id: row.get(5)?,
                 target_agent_id: row.get(6)?,
-                target_agent_name: row.get(7)?,
-                runtime: row.get(8)?,
-                timeout_seconds: row.get(9)?,
+                target_team_id: row.get(7)?,
+                target_agent_name: row.get(8)?,
+                runtime: row.get(9)?,
+                timeout_seconds: row.get(10)?,
             })
         },
     )
@@ -4456,6 +4474,53 @@ mod tests {
         assert_eq!(profile.scope, "project");
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0]["scope"], "project");
+    }
+
+    #[test]
+    fn retry_preserves_global_profile_target_when_project_profile_shadows_name() {
+        let (_dir, conn) = test_conn();
+        let sender = current_test_session(&conn, "alice");
+        global_test_profile(&conn, "reviewer", Runtime::Shell);
+        let global_target = profile_by_name(&conn, &test_project(), "reviewer").unwrap();
+        let original_job_id = create_run_job(
+            &conn,
+            &sender,
+            &global_target,
+            RunJobSpec {
+                task: "original task",
+                context_id: None,
+                context_inputs: None,
+                subject: None,
+                timeout: None,
+                retry_of_job_id: None,
+            },
+        )
+        .unwrap();
+        cmd_profile_create(
+            &conn,
+            ProfileCreateArgs {
+                name: "reviewer".into(),
+                runtime: Some(Runtime::Codex),
+                prompt: None,
+                prompt_file: None,
+                global: false,
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        let project_target = profile_by_name(&conn, &test_project(), "reviewer").unwrap();
+
+        let retry_job_id = create_retry_job(&conn, &original_job_id).unwrap();
+        let retry_job = job_row(&conn, &retry_job_id).unwrap().unwrap();
+        let retry_json = job_json(&conn, &retry_job_id).unwrap().unwrap();
+
+        assert_eq!(project_target.scope, "project");
+        assert_ne!(project_target.agent_id, global_target.agent_id);
+        assert_eq!(retry_job.target_agent_id, global_target.agent_id);
+        assert_eq!(retry_job.target_team_id, global_target.team_id);
+        assert_eq!(retry_job.runtime, "shell");
+        assert_eq!(retry_json["retry_of_job_id"], original_job_id);
     }
 
     #[test]
