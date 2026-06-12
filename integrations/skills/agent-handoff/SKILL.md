@@ -11,7 +11,7 @@ Use this skill when the user wants to send information to another coding agent, 
 
 - The `handoff` binary must be installed and available on `PATH`.
 - The current session should have a readable `@alias` address with `handoff session alias <alias>` when it needs to receive messages.
-- Delegated work should target profiles created with `handoff profile create <profile> --runtime <runtime>`.
+- Delegated work should target profiles created with `handoff profile create <profile> --runtime <runtime>`; built-in runtimes include `claude-code`, `codex`, `copilot`, and `shell`.
 
 ## Core Workflow
 

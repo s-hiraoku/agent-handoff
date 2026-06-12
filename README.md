@@ -112,7 +112,7 @@ git diff | handoff delegate reviewer --stdin --task "Review this diff" --wait
 
 `handoff status <job-id>` prints a short human-readable summary by default. `handoff logs --follow` streams new adapter/stdout/stderr log lines until the job reaches a terminal state. Use `--json` when scripting.
 
-For `shell` runtime, the task text is executed by the shell. `claude-code` and `codex` have built-in adapters that call `claude -p "$HANDOFF_PROMPT" --output-format json` and `codex exec "$HANDOFF_PROMPT" --json`. For other runtimes, or to override any built-in adapter, set an adapter command:
+For `shell` runtime, the task text is executed by the shell. `claude-code`, `codex`, and `copilot` have built-in adapters that call `claude -p "$HANDOFF_PROMPT" --output-format json`, `codex exec "$HANDOFF_PROMPT" --json`, and `copilot -p "$HANDOFF_PROMPT" --output-format=json --allow-all-tools`. For other runtimes, or to override any built-in adapter, set an adapter command:
 
 ```sh
 export HANDOFF_AGENT_CMD_REVIEWER='my-reviewer-agent --task "$HANDOFF_TASK"'
@@ -136,6 +136,7 @@ Profiles and sessions:
 handoff setup claude-code
 handoff profile create <profile> --runtime shell
 handoff profile create <profile> --runtime codex --prompt-file reviewer.md
+handoff profile create <profile> --runtime copilot
 handoff profile list
 handoff profile set <profile> model=...
 handoff profile set reviewer session=@reviewer capability=review
@@ -145,7 +146,7 @@ handoff whoami
 handoff active
 ```
 
-The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable `@alias` address. Profiles keep bare names for background execution; if a session and profile share a name, use `handoff to @alias` for inbox delivery and `handoff delegate <profile>` for worker execution.
+The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, `COPILOT_SESSION_ID`, `GITHUB_COPILOT_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable `@alias` address. Profiles keep bare names for background execution; if a session and profile share a name, use `handoff to @alias` for inbox delivery and `handoff delegate <profile>` for worker execution.
 
 Messaging:
 
@@ -196,6 +197,7 @@ Delivery mode:
 ```sh
 handoff mode
 handoff mode turn
+handoff mode turn --runtime copilot
 handoff mode monitor --runtime claude-code
 handoff mode both --runtime claude-code
 handoff mode off
@@ -205,7 +207,7 @@ handoff reset
 handoff install-alias agent-handoff
 ```
 
-`mode turn` writes a project-local notification hook for supported runtimes. The hook calls `handoff notify --hook --json`, which emits a host-agent response that asks the receiving agent to process new messages immediately. `handoff daemon` writes `.handoff/notify/<session>.md` files for live sessions, and `handoff notify` consumes the current session notification file. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
+`mode turn` writes a project-local notification hook for supported runtimes, including `.codex/hooks.json` for Codex and `.github/hooks/handoff.json` for Copilot. The hook calls `handoff notify --hook --json`, which emits a host-agent response that asks the receiving agent to process new messages immediately. `handoff daemon` writes `.handoff/notify/<session>.md` files for live sessions, and `handoff notify` consumes the current session notification file. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
 
 Project maintenance commands such as `reset` and `install-alias` are user-facing CLI commands. `reset` removes this project's registrations from local handoff state; `install-alias` creates a symlink alias for the current binary under `HANDOFF_HOME/bin`.
 
@@ -294,7 +296,7 @@ Example MCP config:
 `handoff` is a local execution tool, not a sandbox. Treat message text, context captures, adapter commands, and `--cmd` inputs as trusted local operator input:
 
 - `handoff run` executes shell tasks directly for `shell` runtime.
-- `handoff run` and `handoff delegate` may launch local runtime CLIs such as `claude` or `codex` for built-in runtimes.
+- `handoff run` and `handoff delegate` may launch local runtime CLIs such as `claude`, `codex`, or `copilot` for built-in runtimes.
 - `handoff context create --cmd` and adapter commands run through the local shell.
 - MCP clients can trigger the same local CLI behavior through the configured `HANDOFF_BIN`.
 - Do not expose the MCP server or adapter environment to untrusted users or unreviewed automated input.
@@ -349,7 +351,7 @@ Run only the MCP checks:
 Current release target:
 
 ```text
-v0.3.0
+v0.4.0
 ```
 
 Release checklist:

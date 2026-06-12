@@ -173,7 +173,7 @@ handoff to @reviewer --context "$CTX" --message "Use this diff."</code></pre>
             <h3>Run background work</h3>
             <p>Use <code>delegate --wait</code> when the caller needs the result immediately. Use <code>run</code> when background execution is enough.</p>
             <pre class="command-block"><code>git diff | handoff delegate reviewer --stdin --task "Review this diff" --wait</code></pre>
-            <p>Shell runtime executes the task text. <code>claude-code</code> and <code>codex</code> have built-in adapters; other runtimes need adapter commands.</p>
+            <p>Shell runtime executes the task text. <code>claude-code</code>, <code>codex</code>, and <code>copilot</code> have built-in adapters; other runtimes need adapter commands.</p>
             <pre class="command-block"><code>handoff run reviewer --task 'echo reviewed: "$HANDOFF_TASK"' --context "$CTX"
 handoff status &lt;job-id&gt;
 handoff logs &lt;job-id&gt; --follow
@@ -203,7 +203,7 @@ handoff retry &lt;job-id&gt;</code></pre>
       </div>
       <div class="note-panel">
         <strong>Delivery modes</strong>
-        <p>Use <code>handoff mode turn --runtime codex</code> or <code>handoff mode both --runtime claude-code</code> for hooks. Turn hooks call <code>handoff notify --hook --json</code> so incoming messages are surfaced as actionable agent context.</p>
+        <p>Use <code>handoff mode turn --runtime codex</code>, <code>handoff mode turn --runtime copilot</code>, or <code>handoff mode both --runtime claude-code</code> for hooks. Turn hooks call <code>handoff notify --hook --json</code> so incoming messages are surfaced as actionable agent context.</p>
       </div>
     </aside>
   </div>
