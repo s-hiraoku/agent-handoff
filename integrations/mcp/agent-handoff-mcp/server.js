@@ -116,7 +116,7 @@ const server = new McpServer({
 
 server.tool(
   "handoff_send",
-  "Send a message to another local agent.",
+  "Send a message to another live session using @alias or a session id.",
   {
     agent: z.string(),
     message: z.string(),
@@ -135,6 +135,23 @@ server.tool(
     if (threadId) args.push("--thread", threadId);
     if (contextId) args.push("--context", contextId);
     args.push("--json");
+    return textResult(await runHandoff(args, undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_route",
+  "Route a message to an active session linked from a capable profile.",
+  {
+    capability: z.string(),
+    message: z.string().optional(),
+    subject: z.string().optional(),
+    project: z.string().optional()
+  },
+  async ({ capability, message, subject, project }) => {
+    const args = ["route", "--capability", capability, "--json"];
+    if (subject) args.push("--subject", subject);
+    if (message) args.push(message);
     return textResult(await runHandoff(args, undefined, project));
   }
 );

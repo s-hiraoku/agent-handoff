@@ -42,14 +42,16 @@ echo "== init/session/profile =="
 HANDOFF_SESSION_ID=lead-session "$bin" session alias lead >/dev/null
 HANDOFF_SESSION_ID=reviewer-session "$bin" session alias reviewer >/dev/null
 "$bin" profile create reviewer --runtime shell >/dev/null
+"$bin" profile set reviewer session=@reviewer capability=review >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" sessions | grep "@reviewer" >/dev/null
 
 echo "== send/inbox/history =="
-HANDOFF_SESSION_ID=lead-session "$bin" to reviewer "Please review" --subject "Review request" >/dev/null
-HANDOFF_SESSION_ID=lead-session "$bin" post reviewer "Peerpost alias works" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" to @reviewer "Please review" --subject "Review request" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" post @reviewer "Peerpost alias works" >/dev/null
 inbox_count="$(HANDOFF_SESSION_ID=reviewer-session "$bin" inbox --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
 test "$inbox_count" -eq 2
 HANDOFF_SESSION_ID=lead-session "$bin" history --json | python3 -c 'import json,sys; assert len(json.load(sys.stdin)["messages"]) >= 2'
-HANDOFF_SESSION_ID=lead-session "$bin" to reviewer "Peek safety" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" to @reviewer "Peek safety" >/dev/null
 peek_count="$(HANDOFF_SESSION_ID=reviewer-session "$bin" inbox --peek --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["marked_read"] is False; print(len(data["messages"]))')"
 test "$peek_count" -eq 1
 after_peek_count="$(HANDOFF_SESSION_ID=reviewer-session "$bin" inbox --peek --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
@@ -57,21 +59,24 @@ test "$after_peek_count" -eq 1
 HANDOFF_SESSION_ID=reviewer-session "$bin" inbox >/dev/null
 cleared_count="$(HANDOFF_SESSION_ID=reviewer-session "$bin" inbox --peek --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
 test "$cleared_count" -eq 0
-HANDOFF_SESSION_ID=lead-session "$bin" to reviewer "Monitor delivery works" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" to @reviewer "Monitor delivery works" >/dev/null
 HANDOFF_SESSION_ID=reviewer-session "$bin" monitor --runtime shell --once | grep "Monitor delivery works" >/dev/null
 monitor_unread="$(HANDOFF_SESSION_ID=reviewer-session "$bin" inbox --json | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["messages"]))')"
 test "$monitor_unread" -eq 0
-HANDOFF_SESSION_ID=lead-session "$bin" to reviewer "Notify delivery works" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" to @reviewer "Notify delivery works" >/dev/null
 "$bin" daemon --once >/dev/null
 HANDOFF_SESSION_ID=reviewer-session "$bin" notify | grep "Notify delivery works" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" route --capability review "Routed review works" >/dev/null
+route_count="$(HANDOFF_SESSION_ID=reviewer-session "$bin" inbox --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["messages"][0]["body"] == "Routed review works"; print(len(data["messages"]))')"
+test "$route_count" -eq 1
 
 echo "== context =="
 context_id="$(HANDOFF_SESSION_ID=lead-session "$bin" context create --text "important context" --json | json_get '["context_id"]')"
 "$bin" context show "$context_id" --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["context"]["items"][0]["content"] == "important context"'
-HANDOFF_SESSION_ID=lead-session "$bin" to reviewer --context "$context_id" --message "Use this context" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" to @reviewer --context "$context_id" --message "Use this context" >/dev/null
 note="$tmp/note.md"
 printf 'file context\n' > "$note"
-HANDOFF_SESSION_ID=lead-session "$bin" to reviewer --file "$note" --as-context --message "Use this file as context" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" to @reviewer --file "$note" --as-context --message "Use this file as context" >/dev/null
 
 echo "== delivery mode hooks =="
 "$bin" mode turn --runtime codex --project "$tmp/project" >/dev/null

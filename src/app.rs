@@ -1,6 +1,6 @@
 use crate::delivery::{apply_delivery_mode, print_monitor_instruction, validate_mode};
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -48,6 +48,8 @@ enum Commands {
     Send(SendArgs),
     #[command(about = "Send a message to another live session")]
     To(SendArgs),
+    #[command(about = "Route a message to a capable live session")]
+    Route(RouteArgs),
     #[command(about = "Send a message using the peerpost-style alias")]
     Post(SendArgs),
     #[command(about = "Reply to an existing thread")]
@@ -184,8 +186,10 @@ struct SessionAliasArgs {
 
 #[derive(Args, Debug, Clone)]
 struct SendArgs {
-    #[arg(help = "Recipient session id or alias")]
+    #[arg(help = "Recipient session id or @alias")]
     session: String,
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
     #[arg(help = "Message text. Omit when using --stdin, --file, or --message")]
     message: Vec<String>,
     #[arg(long = "as", hide = true)]
@@ -222,6 +226,20 @@ struct SendArgs {
         help = "Message text when positional text would be ambiguous"
     )]
     message_text: Option<String>,
+    #[arg(long, help = "Print machine-readable JSON")]
+    json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct RouteArgs {
+    #[arg(help = "Message text. Omit to list matching route candidates")]
+    message: Vec<String>,
+    #[arg(long, help = "Required profile capability, such as review or docs")]
+    capability: String,
+    #[arg(long, help = "Use this project path instead of the current directory")]
+    project: Option<PathBuf>,
+    #[arg(long, help = "Optional subject for the routed message")]
+    subject: Option<String>,
     #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
@@ -318,6 +336,8 @@ struct NotifyArgs {
     runtime: Option<Runtime>,
     #[arg(long, help = "Stable session id")]
     session_id: Option<String>,
+    #[arg(long, help = "Emit agent hook response JSON")]
+    hook: bool,
     #[arg(long, help = "Print machine-readable JSON")]
     json: bool,
 }
@@ -582,6 +602,7 @@ fn run() -> Result<()> {
         Commands::Send(args) | Commands::To(args) | Commands::Post(args) => {
             cmd_send(&conn, args, "message")
         }
+        Commands::Route(args) => cmd_route(&conn, args),
         Commands::Reply(args) => cmd_reply(&conn, args),
         Commands::Inbox(args) => cmd_inbox(&conn, args),
         Commands::History(args) => cmd_history(&conn, args),
@@ -961,11 +982,14 @@ fn cmd_sessions(conn: &Connection, args: ProjectArgs) -> Result<()> {
                 " "
             };
             let alias = session["alias"].as_str().unwrap_or("");
+            let address = session["address"].as_str().unwrap_or_default();
+            let reachability = session["reachability"].as_str().unwrap_or_default();
             println!(
-                "{marker} {} {} ({})",
+                "{marker} {} {} ({}) {}",
                 session["session_key"].as_str().unwrap_or_default(),
-                alias,
-                session["runtime"].as_str().unwrap_or_default()
+                if address.is_empty() { alias } else { address },
+                session["runtime"].as_str().unwrap_or_default(),
+                reachability
             );
         }
     }
@@ -982,11 +1006,14 @@ fn cmd_session_alias(conn: &Connection, args: SessionAliasArgs) -> Result<()> {
     let project = project_path(args.project)?;
     let runtime = args.runtime.unwrap_or_else(detect_runtime);
     let session = current_session(conn, &project, Some(runtime.as_str()), None)?;
-    set_session_alias(conn, &project, &session.agent_id, &args.alias)?;
+    let alias = normalize_session_alias(&args.alias)?;
+    set_session_alias(conn, &project, &session.agent_id, &alias)?;
     if args.json {
-        print_json(json!({"ok": true, "session": session.agent, "alias": args.alias}));
+        print_json(
+            json!({"ok": true, "session": session.agent, "alias": alias, "address": format!("@{alias}")}),
+        );
     } else {
-        println!("session alias {}", args.alias);
+        println!("session alias @{alias}");
     }
     Ok(())
 }
@@ -1014,9 +1041,9 @@ fn cmd_active(conn: &Connection, args: ProjectArgs) -> Result<()> {
 }
 
 fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()> {
-    let project = project_path(None)?;
+    let project = project_path(args.project.clone())?;
     let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
-    let recipient = session_by_name(conn, &project, &args.session)?;
+    let recipient = recipient_session_for_send(conn, &project, &args.session)?;
     let created_context = create_send_context_if_requested(conn, &sender, &args)?;
     let context_id = args.context.as_deref().or(created_context.as_deref());
     let body = read_send_body(&args, context_id.is_some())?;
@@ -1054,6 +1081,71 @@ fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()>
         println!("sent {message_id}");
     }
     Ok(())
+}
+
+fn cmd_route(conn: &Connection, args: RouteArgs) -> Result<()> {
+    let project = project_path(args.project)?;
+    let candidates = route_candidates(conn, &project, &args.capability)?;
+    if args.message.is_empty() {
+        if args.json {
+            print_json(
+                json!({"ok": true, "project": project, "capability": args.capability, "candidates": candidates}),
+            );
+        } else if candidates.is_empty() {
+            println!("No route candidates");
+        } else {
+            for candidate in candidates {
+                println!(
+                    "{} -> {} [{}] {}",
+                    candidate["profile"].as_str().unwrap_or_default(),
+                    candidate["session"].as_str().unwrap_or_default(),
+                    candidate["capability"].as_str().unwrap_or_default(),
+                    candidate["reachability"].as_str().unwrap_or_default()
+                );
+            }
+        }
+        return Ok(());
+    }
+    let sendable = candidates
+        .iter()
+        .filter(|candidate| candidate["reachability"].as_str() == Some("active"))
+        .collect::<Vec<_>>();
+    if sendable.is_empty() {
+        bail!(
+            "route_not_found: no profile with capability '{}' has an active session",
+            args.capability
+        );
+    }
+    if sendable.len() > 1 {
+        bail!(
+            "ambiguous_route: capability '{}' matches {} sessions; inspect with `handoff route --capability {}` and send to @alias explicitly",
+            args.capability,
+            sendable.len(),
+            args.capability
+        );
+    }
+    let candidate = sendable[0];
+    let session_key = candidate["session_key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("route candidate missing session_key"))?;
+    let send_args = SendArgs {
+        session: format!("@{session_key}"),
+        project: Some(PathBuf::from(&project)),
+        message: args.message,
+        as_agent: None,
+        team: None,
+        stdin: false,
+        file: None,
+        as_context: false,
+        git_diff: false,
+        cmd: None,
+        subject: args.subject,
+        thread: None,
+        context: None,
+        message_text: None,
+        json: args.json,
+    };
+    cmd_send(conn, send_args, "message")
 }
 
 fn cmd_reply(conn: &Connection, args: ReplyArgs) -> Result<()> {
@@ -1229,9 +1321,23 @@ fn cmd_notify(conn: &Connection, args: NotifyArgs) -> Result<()> {
             mark_message_read(conn, &identity, message_id)?;
         }
         if args.json {
-            print_json(
-                json!({"ok": true, "messages": messages, "marked_read": true, "source": "inbox"}),
-            );
+            if args.hook {
+                let body = if messages.is_empty() {
+                    String::new()
+                } else {
+                    let session = NotifySession {
+                        agent_id: identity.agent_id.clone(),
+                        session_key: session_key.clone(),
+                        label: identity.agent.clone(),
+                    };
+                    notify_markdown(&session, &messages)
+                };
+                print_json(hook_response_json(&body));
+            } else {
+                print_json(
+                    json!({"ok": true, "messages": messages, "marked_read": true, "source": "inbox"}),
+                );
+            }
         } else if messages.is_empty() {
             println!("No notifications");
         } else {
@@ -1251,7 +1357,11 @@ fn cmd_notify(conn: &Connection, args: NotifyArgs) -> Result<()> {
     }
     let _ = fs::remove_file(&path);
     if args.json {
-        print_json(json!({"ok": true, "message_ids": message_ids, "body": content}));
+        if args.hook {
+            print_json(hook_response_json(&content));
+        } else {
+            print_json(json!({"ok": true, "message_ids": message_ids, "body": content}));
+        }
     } else {
         print!("{content}");
     }
@@ -1802,7 +1912,7 @@ fn install_handoff_skill(project: &str) -> Result<()> {
 }
 
 fn default_skill_content() -> &'static str {
-    "# handoff\n\nUse `handoff delegate <profile> --task \"...\" --wait` for synchronous sub-agent work.\nUse `handoff to <session|alias> \"...\"` for live session coordination.\nRun `handoff notify` after turns when notification hooks are unavailable.\n"
+    "# handoff\n\nUse `handoff delegate <profile> --task \"...\" --wait` for synchronous sub-agent work.\nUse `handoff to @<alias> \"...\"` for live session coordination.\nUse `handoff route --capability <capability> \"...\"` after linking profiles with `handoff profile set <profile> session=@alias capability=...`.\nRun `handoff notify` after turns when notification hooks are unavailable.\n"
 }
 
 fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
@@ -2278,6 +2388,7 @@ fn sender_session(conn: &Connection, project: &str, explicit: Option<&str>) -> R
 }
 
 fn session_identity_by_name(conn: &Connection, project: &str, name: &str) -> Result<Identity> {
+    let (name, _) = normalize_session_lookup(name);
     conn.query_row(
         "select s.team_id, t.name, s.agent_id, coalesce(s.alias, a.name), s.runtime
          from sessions s
@@ -2300,6 +2411,7 @@ fn session_identity_by_name(conn: &Connection, project: &str, name: &str) -> Res
 }
 
 fn session_by_name(conn: &Connection, project: &str, name: &str) -> Result<AgentRef> {
+    let (name, _) = normalize_session_lookup(name);
     conn.query_row(
         "select s.team_id, s.agent_id, coalesce(s.alias, a.name), s.runtime
          from sessions s
@@ -2316,6 +2428,17 @@ fn session_by_name(conn: &Connection, project: &str, name: &str) -> Result<Agent
     )
     .optional()?
     .ok_or_else(|| anyhow!("unknown_session: {name}"))
+}
+
+fn recipient_session_for_send(conn: &Connection, project: &str, name: &str) -> Result<AgentRef> {
+    let (lookup, explicit_session) = normalize_session_lookup(name);
+    let recipient = session_by_name(conn, project, lookup)?;
+    if !explicit_session && profile_exists(conn, project, lookup)? {
+        bail!(
+            "ambiguous_destination: '{lookup}' matches both a session alias and a profile. Use `handoff to @{lookup}` for the session inbox or `handoff delegate {lookup}` for the profile."
+        );
+    }
+    Ok(recipient)
 }
 
 fn list_sessions(conn: &Connection, project: &str) -> Result<Vec<Value>> {
@@ -2335,14 +2458,111 @@ fn list_sessions(conn: &Connection, project: &str) -> Result<Vec<Value>> {
             "last_seen_at": row.get::<_, String>(5)?,
         }))
     })?;
-    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    let sessions = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(sessions
+        .into_iter()
+        .map(with_session_address_and_reachability)
+        .collect())
+}
+
+fn session_snapshot_by_name(conn: &Connection, project: &str, name: &str) -> Result<Option<Value>> {
+    let (name, _) = normalize_session_lookup(name);
+    let row = conn
+        .query_row(
+            "select s.agent_id, s.session_key, s.alias, s.runtime, s.source, s.last_seen_at
+             from sessions s
+             join agents a on a.id=s.agent_id
+             where s.project_path=?1 and (s.session_key=?2 or s.alias=?2 or a.name=?2)",
+            params![project, name],
+            |row| {
+                Ok(json!({
+                    "agent_id": row.get::<_, String>(0)?,
+                    "session_key": row.get::<_, String>(1)?,
+                    "alias": row.get::<_, Option<String>>(2)?,
+                    "runtime": row.get::<_, String>(3)?,
+                    "source": row.get::<_, String>(4)?,
+                    "last_seen_at": row.get::<_, String>(5)?,
+                }))
+            },
+        )
+        .optional()?;
+    Ok(row.map(with_session_address_and_reachability))
+}
+
+fn with_session_address_and_reachability(mut session: Value) -> Value {
+    let address = session["alias"]
+        .as_str()
+        .map(|alias| format!("@{alias}"))
+        .unwrap_or_else(|| {
+            session["session_key"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        });
+    let reachability = session_reachability(session["last_seen_at"].as_str().unwrap_or_default());
+    session["address"] = json!(address);
+    session["reachability"] = json!(reachability);
+    session
+}
+
+fn session_reachability(last_seen_at: &str) -> &'static str {
+    let Ok(last_seen) = DateTime::parse_from_rfc3339(last_seen_at) else {
+        return "unknown";
+    };
+    let age = Utc::now().signed_duration_since(last_seen.with_timezone(&Utc));
+    if age <= chrono::Duration::minutes(10) {
+        "active"
+    } else {
+        "stale"
+    }
+}
+
+fn route_candidates(conn: &Connection, project: &str, capability: &str) -> Result<Vec<Value>> {
+    let profiles = list_profiles(conn, project)?;
+    let mut candidates = Vec::new();
+    for profile in profiles {
+        let options = profile["options"].clone();
+        if !profile_has_capability(&options, capability) {
+            continue;
+        }
+        let profile_name = profile["name"].as_str().unwrap_or_default();
+        let session_ref = options["session"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("@{profile_name}"));
+        if let Some(session) = session_snapshot_by_name(conn, project, &session_ref)? {
+            candidates.push(json!({
+                "profile": profile_name,
+                "runtime": profile["runtime"],
+                "capability": options["capability"],
+                "session": session["address"],
+                "session_key": session["session_key"],
+                "reachability": session["reachability"],
+                "last_seen_at": session["last_seen_at"],
+            }));
+        }
+    }
+    candidates.sort_by(|a, b| {
+        let ar = a["reachability"].as_str().unwrap_or_default();
+        let br = b["reachability"].as_str().unwrap_or_default();
+        (br == "active").cmp(&(ar == "active"))
+    });
+    Ok(candidates)
+}
+
+fn profile_has_capability(options: &Value, requested: &str) -> bool {
+    let requested = requested.trim();
+    options["capability"].as_str().is_some_and(|capabilities| {
+        capabilities
+            .split([',', ' '])
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .any(|value| value == requested)
+    })
 }
 
 fn set_session_alias(conn: &Connection, project: &str, agent_id: &str, alias: &str) -> Result<()> {
-    let alias = alias.trim();
-    if alias.is_empty() {
-        bail!("invalid_arguments: alias cannot be empty");
-    }
+    let alias = normalize_session_alias(alias)?;
     let existing: Option<String> = conn
         .query_row(
             "select agent_id from sessions where project_path=?1 and alias=?2",
@@ -2365,6 +2585,40 @@ fn set_session_alias(conn: &Connection, project: &str, agent_id: &str, alias: &s
         params![alias, now(), agent_id],
     )?;
     Ok(())
+}
+
+fn normalize_session_alias(alias: &str) -> Result<String> {
+    let alias = alias.trim().trim_start_matches('@').trim();
+    if alias.is_empty() {
+        bail!("invalid_arguments: alias cannot be empty");
+    }
+    Ok(alias.to_string())
+}
+
+fn normalize_session_lookup(name: &str) -> (&str, bool) {
+    let name = name.trim();
+    if let Some(alias) = name.strip_prefix('@') {
+        (alias.trim(), true)
+    } else {
+        (name, false)
+    }
+}
+
+fn profile_exists(conn: &Connection, project: &str, name: &str) -> Result<bool> {
+    let team_id = project_team_id(conn, project)?;
+    let exists = conn
+        .query_row(
+            "select 1 from agents a
+             join profile_settings ps on ps.agent_id=a.id
+             join project_registrations pr on pr.agent_id=a.id and pr.team_id=a.team_id
+             where a.team_id=?1 and pr.project_path=?2 and a.name=?3
+             limit 1",
+            params![team_id, project, name],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(exists)
 }
 
 fn session_display_name(session_key: &str) -> String {
@@ -2598,7 +2852,10 @@ fn notify_path(project: &str, session_key: &str) -> Result<PathBuf> {
 }
 
 fn notify_markdown(session: &NotifySession, messages: &[Value]) -> String {
-    let mut output = format!("# handoff notifications for {}\n\n", session.label);
+    let mut output = format!(
+        "# handoff notifications for {}\n\nProcess these incoming handoff messages now. If a reply is needed, use `handoff reply <thread-id> <message>`.\n\n",
+        session.label
+    );
     for message in messages {
         let id = message["id"].as_str().unwrap_or_default();
         output.push_str(&format!("<!-- handoff-message-id: {id} -->\n"));
@@ -2611,8 +2868,24 @@ fn notify_markdown(session: &NotifySession, messages: &[Value]) -> String {
         if let Some(context_id) = message["context_id"].as_str() {
             output.push_str(&format!("Context: `{context_id}`\n\n"));
         }
+        if let Some(thread_id) = message["thread_id"].as_str() {
+            output.push_str(&format!("Thread: `{thread_id}`\n\n"));
+        }
     }
     output
+}
+
+fn hook_response_json(body: &str) -> Value {
+    if body.trim().is_empty() {
+        return json!({
+            "continue": true,
+            "systemMessage": "handoff: no new messages"
+        });
+    }
+    json!({
+        "decision": "block",
+        "reason": body
+    })
 }
 
 fn notify_message_ids(content: &str) -> Vec<String> {
@@ -3715,14 +3988,18 @@ fn error_hint(message: &str) -> Option<&'static str> {
     } else if message.contains("unknown_profile") {
         Some("  handoff profile list\n  handoff profile create <profile> --runtime shell")
     } else if message.contains("unknown_session") {
-        Some("  handoff sessions\n  handoff session alias <alias>")
+        Some(
+            "  handoff sessions\n  handoff session alias <alias>\n  handoff to @<alias> \"message\"",
+        )
+    } else if message.contains("ambiguous_destination") {
+        Some("  handoff to @<alias> \"message\"\n  handoff delegate <profile> --task \"...\"")
     } else if message.contains("context_capture_failed") {
         Some(
             "  handoff context create --text \"notes\"\n  handoff context create --git-diff\n  handoff context create --file <path>",
         )
     } else if message.contains("provide exactly one message source") {
         Some(
-            "  handoff to <agent> \"message\"\n  command | handoff to <agent> --stdin\n  handoff to <agent> --file <path>",
+            "  handoff to @<alias> \"message\"\n  command | handoff to @<alias> --stdin\n  handoff to @<alias> --file <path>",
         )
     } else if message.contains("job_not_finished") {
         Some("  handoff status <job-id>\n  handoff logs <job-id>")
@@ -3813,7 +4090,8 @@ mod tests {
         cmd_send(
             &conn,
             SendArgs {
-                session: "bob".into(),
+                session: "@bob".into(),
+                project: None,
                 message: vec!["hello".into()],
                 as_agent: None,
                 team: None,
@@ -3837,6 +4115,127 @@ mod tests {
     }
 
     #[test]
+    fn send_to_at_alias_works_when_profile_has_same_name() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "alice");
+        let reviewer = named_test_session(&conn, "reviewer-session", "reviewer");
+        test_profile(&conn, "reviewer");
+        cmd_send(
+            &conn,
+            SendArgs {
+                session: "@reviewer".into(),
+                project: None,
+                message: vec!["hello reviewer".into()],
+                as_agent: None,
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        let inbox = inbox_messages(&conn, &reviewer.agent_id, true, 10).unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0]["body"], "hello reviewer");
+    }
+
+    #[test]
+    fn send_bare_name_is_ambiguous_when_session_and_profile_match() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "alice");
+        named_test_session(&conn, "reviewer-session", "reviewer");
+        test_profile(&conn, "reviewer");
+        let err = cmd_send(
+            &conn,
+            SendArgs {
+                session: "reviewer".into(),
+                project: None,
+                message: vec!["hello reviewer".into()],
+                as_agent: None,
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("ambiguous_destination"));
+        assert!(err.to_string().contains("handoff to @reviewer"));
+    }
+
+    #[test]
+    fn route_sends_to_profile_linked_session_by_capability() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "alice");
+        let reviewer = named_test_session(&conn, "reviewer-session", "reviewer");
+        test_profile(&conn, "reviewer");
+        cmd_profile_set(
+            &conn,
+            ProfileSetArgs {
+                name: "reviewer".into(),
+                settings: vec!["session=@reviewer".into(), "capability=review,docs".into()],
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        cmd_route(
+            &conn,
+            RouteArgs {
+                message: vec!["please review".into()],
+                capability: "review".into(),
+                project: None,
+                subject: Some("Review request".into()),
+                json: false,
+            },
+        )
+        .unwrap();
+        let inbox = inbox_messages(&conn, &reviewer.agent_id, true, 10).unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0]["body"], "please review");
+        assert_eq!(inbox[0]["subject"], "Review request");
+    }
+
+    #[test]
+    fn route_reports_candidates_without_sending_when_message_is_empty() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "alice");
+        named_test_session(&conn, "reviewer-session", "reviewer");
+        test_profile(&conn, "reviewer");
+        cmd_profile_set(
+            &conn,
+            ProfileSetArgs {
+                name: "reviewer".into(),
+                settings: vec!["session=@reviewer".into(), "capability=review".into()],
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+        let candidates = route_candidates(&conn, &test_project(), "review").unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0]["profile"], "reviewer");
+        assert_eq!(candidates[0]["session"], "@reviewer");
+        assert_eq!(candidates[0]["reachability"], "active");
+    }
+
+    #[test]
     fn send_honors_explicit_sender_session() {
         let (_dir, conn) = test_conn();
         current_test_session(&conn, "lead");
@@ -3846,6 +4245,7 @@ mod tests {
             &conn,
             SendArgs {
                 session: "observer".into(),
+                project: None,
                 message: vec!["from reviewer".into()],
                 as_agent: Some("reviewer".into()),
                 team: None,
@@ -3977,6 +4377,7 @@ mod tests {
             &conn,
             SendArgs {
                 session: "bob".into(),
+                project: None,
                 message: vec![],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -4011,6 +4412,7 @@ mod tests {
             &conn,
             SendArgs {
                 session: "bob".into(),
+                project: None,
                 message: vec![],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -4051,6 +4453,7 @@ mod tests {
             &conn,
             SendArgs {
                 session: "bob".into(),
+                project: None,
                 message: vec!["stream me".into()],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -4089,6 +4492,7 @@ mod tests {
             &conn,
             SendArgs {
                 session: "bob".into(),
+                project: None,
                 message: vec!["notify me".into()],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -4112,6 +4516,7 @@ mod tests {
                 project: None,
                 runtime: Some(Runtime::Shell),
                 session_id: Some("bob-notify-session".into()),
+                hook: false,
                 json: false,
             },
         )
@@ -4124,6 +4529,25 @@ mod tests {
     }
 
     #[test]
+    fn hook_response_json_blocks_when_messages_exist() {
+        let response = hook_response_json("new handoff message");
+        assert_eq!(response["decision"], "block");
+        assert!(
+            response["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("new handoff message")
+        );
+    }
+
+    #[test]
+    fn hook_response_json_continues_when_no_messages_exist() {
+        let response = hook_response_json("");
+        assert_eq!(response["continue"], true);
+        assert_eq!(response["systemMessage"], "handoff: no new messages");
+    }
+
+    #[test]
     fn inbox_peek_does_not_mark_messages_read() {
         let (_dir, conn) = test_conn();
         current_test_session(&conn, "alice");
@@ -4132,6 +4556,7 @@ mod tests {
             &conn,
             SendArgs {
                 session: "bob".into(),
+                project: None,
                 message: vec!["peek me".into()],
                 as_agent: Some("alice".into()),
                 team: None,
@@ -4211,6 +4636,7 @@ mod tests {
         let content = fs::read_to_string(&hook_path).unwrap();
         assert!(content.contains("handoff"));
         assert!(content.contains("notify"));
+        assert!(content.contains("--hook"));
         assert!(content.contains("--project"));
 
         cmd_mode(
@@ -4290,7 +4716,7 @@ mod tests {
         let content = fs::read_to_string(&hook_path).unwrap();
         assert!(content.contains("SessionStart"));
         assert!(content.contains("\"Stop\""));
-        assert!(content.contains("notify --json --project"));
+        assert!(content.contains("notify --hook --json --project"));
     }
 
     #[test]

@@ -126,7 +126,8 @@ CLI の変更:
 
 - `join` / `actas` / `drop` / `rename-team` を廃止(deprecation 期間後に削除)
 - 送信者は常に「いまのセッション」で自動決定。曖昧さは原理的に発生しない
-- 宛先はセッション(またはそのエイリアス)を指定: `handoff to <session|alias> <message>`
+- 宛先はライブセッションを指定。読みやすいエイリアスは `@alias` として送る:
+  `handoff to @<alias> <message>`
 
 トレードオフ: セッションをまたぐ永続的な宛先(「reviewer 宛に送っておけば、次に
 reviewer セッションが立ち上がった時に読む」)は失われる。このユースケースが実際に
