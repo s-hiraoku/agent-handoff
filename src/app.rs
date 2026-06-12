@@ -1125,11 +1125,11 @@ fn cmd_route(conn: &Connection, args: RouteArgs) -> Result<()> {
         );
     }
     let candidate = sendable[0];
-    let session = candidate["session"]
+    let session_key = candidate["session_key"]
         .as_str()
-        .ok_or_else(|| anyhow!("route candidate missing session"))?;
+        .ok_or_else(|| anyhow!("route candidate missing session_key"))?;
     let send_args = SendArgs {
-        session: session.to_string(),
+        session: format!("@{session_key}"),
         project: Some(PathBuf::from(&project)),
         message: args.message,
         as_agent: None,
@@ -1912,7 +1912,7 @@ fn install_handoff_skill(project: &str) -> Result<()> {
 }
 
 fn default_skill_content() -> &'static str {
-    "# handoff\n\nUse `handoff delegate <profile> --task \"...\" --wait` for synchronous sub-agent work.\nUse `handoff to @<alias> \"...\"` for live session coordination.\nUse `handoff route --capability <capability> \"...\"` after linking profiles with `profile set <profile> session=@alias capability=...`.\nRun `handoff notify` after turns when notification hooks are unavailable.\n"
+    "# handoff\n\nUse `handoff delegate <profile> --task \"...\" --wait` for synchronous sub-agent work.\nUse `handoff to @<alias> \"...\"` for live session coordination.\nUse `handoff route --capability <capability> \"...\"` after linking profiles with `handoff profile set <profile> session=@alias capability=...`.\nRun `handoff notify` after turns when notification hooks are unavailable.\n"
 }
 
 fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
@@ -2510,7 +2510,7 @@ fn session_reachability(last_seen_at: &str) -> &'static str {
         return "unknown";
     };
     let age = Utc::now().signed_duration_since(last_seen.with_timezone(&Utc));
-    if age.num_minutes() <= 10 {
+    if age <= chrono::Duration::minutes(10) {
         "active"
     } else {
         "stale"

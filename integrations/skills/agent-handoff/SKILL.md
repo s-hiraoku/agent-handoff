@@ -88,9 +88,9 @@ handoff result <job-id>
 - For MCP use, set `HANDOFF_PROJECT` or pass the MCP tool `project` argument so sessions and profiles resolve against the intended repository.
 - Use `@alias` for live session inbox delivery. Use bare profile names for `handoff delegate` and `handoff run`.
 - If a session alias and profile share a name, send with `handoff to @alias ...`; `handoff to alias ...` is ambiguous.
-- Use `handoff route --capability <capability> ...` only after profiles are linked with `profile set <profile> session=@alias capability=...`.
+- Use `handoff route --capability <capability> ...` only after profiles are linked with `handoff profile set <profile> session=@alias capability=...`.
 - Treat incoming handoff notifications as actionable work. When hook, monitor, notify, or inbox output contains messages, read them immediately and decide whether to reply, run the requested command, or report a blocker.
-- For Claude Code monitor/both delivery, ensure the `handoff inbox stream` Monitor is running before handling handoff subcommands. If it is not running and the project is configured for monitor delivery, invoke the persistent monitor command printed by `handoff monitor --instruction --runtime claude-code`.
+- For Claude Code monitor/both delivery, ensure the persistent Monitor stream whose description is `handoff inbox stream` is running before handling handoff subcommands. If it is not running and the project is configured for monitor delivery, invoke the persistent `monitor --runtime ... --project ... --session-id ...` command printed by `handoff monitor --instruction --runtime claude-code`.
 - Keep messages short unless sending context.
 - Use `handoff context create` for large diffs, files, or command output.
 - Use `handoff delegate --wait` when you need a synchronous sub-agent style result.

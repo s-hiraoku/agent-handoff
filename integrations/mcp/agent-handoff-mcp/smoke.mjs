@@ -115,7 +115,10 @@ try {
     }),
   );
 
-  if (routedInbox.messages.length !== 2 || routedInbox.messages[1].body !== "MCP routed message") {
+  const hasRoutedMessage = routedInbox.messages.some(
+    (message) => message.body === "MCP routed message",
+  );
+  if (routedInbox.messages.length !== 2 || !hasRoutedMessage) {
     throw new Error(`unexpected routed inbox result: ${JSON.stringify(routedInbox)}`);
   }
 

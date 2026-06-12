@@ -98,9 +98,9 @@ reference_search: true
             <td>Header and ordered context items.</td>
             <td>Use <code>handoff context list</code> for recent packages.</td>
           </tr>
-          <tr tabindex="0" data-command-row data-category="jobs" data-command="handoff run" data-use="Start background work for another agent." data-recovery="Check status and logs after queueing.">
-            <td><code>handoff run &lt;agent&gt; --task &lt;text&gt;</code></td>
-            <td>Queue a background task for a target agent.</td>
+          <tr tabindex="0" data-command-row data-category="jobs" data-command="handoff run" data-use="Start background work for another profile." data-recovery="Check status and logs after queueing.">
+            <td><code>handoff run &lt;profile&gt; --task &lt;text&gt;</code></td>
+            <td>Queue a background task for a target profile.</td>
             <td><code>--context</code> <code>--git-diff</code> <code>--file</code> <code>--timeout</code> <code>--as</code></td>
             <td>Job id, or JSON with <code>job_id</code>.</td>
             <td>Run <code>handoff status &lt;job-id&gt;</code>.</td>
