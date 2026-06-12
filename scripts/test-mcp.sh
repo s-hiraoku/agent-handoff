@@ -31,6 +31,7 @@ mkdir -p "$HANDOFF_PROJECT"
 HANDOFF_SESSION_ID=lead-session "$HANDOFF_BIN" session alias lead --project "$HANDOFF_PROJECT" >/dev/null
 HANDOFF_SESSION_ID=reviewer-session "$HANDOFF_BIN" session alias reviewer --project "$HANDOFF_PROJECT" >/dev/null
 "$HANDOFF_BIN" profile create reviewer --runtime shell --project "$HANDOFF_PROJECT" >/dev/null
+"$HANDOFF_BIN" profile set reviewer session=@reviewer capability=review --project "$HANDOFF_PROJECT" >/dev/null
 export HANDOFF_SESSION_ID=lead-session
 
 node smoke.mjs

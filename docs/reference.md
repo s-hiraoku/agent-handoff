@@ -56,12 +56,19 @@ reference_search: true
             <td>Messages plus <code>marked_read</code> in JSON.</td>
             <td>Run <code>handoff inbox</code> when ready to consume.</td>
           </tr>
-          <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff to reviewer" data-use="Send a direct message or context handoff." data-recovery="Use handoff sessions to confirm the recipient exists.">
-            <td><code>handoff to &lt;session|alias&gt; "message"</code></td>
-            <td>Send a concise message to another live session.</td>
-            <td><code>--subject</code> <code>--thread</code> <code>--context</code></td>
+          <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff to @reviewer" data-use="Send a direct message or context handoff." data-recovery="Use handoff sessions to confirm the recipient exists.">
+            <td><code>handoff to @&lt;alias&gt; "message"</code></td>
+            <td>Send a concise message to another live session inbox.</td>
+            <td><code>--project</code> <code>--subject</code> <code>--thread</code> <code>--context</code></td>
             <td>Message id, or JSON with <code>message_id</code>.</td>
-            <td>Use <code>handoff sessions</code> for unknown recipients.</td>
+            <td>Use <code>handoff sessions</code> for unknown recipients; use <code>delegate</code> for profiles.</td>
+          </tr>
+          <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff route capability" data-use="Route a message by linked profile capability." data-recovery="Link a profile to a live session first.">
+            <td><code>handoff route --capability review "message"</code></td>
+            <td>Send to the active session linked from a profile with the requested capability.</td>
+            <td><code>--project</code> <code>--subject</code> <code>--json</code></td>
+            <td>Candidates when no message is provided, or message id when routed.</td>
+            <td>Run <code>handoff profile set reviewer session=@reviewer capability=review</code>.</td>
           </tr>
           <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff reply" data-use="Continue an existing thread." data-recovery="Use handoff history to locate the thread id.">
             <td><code>handoff reply &lt;thread-id&gt; "message"</code></td>
@@ -69,6 +76,13 @@ reference_search: true
             <td><code>--as</code> <code>--stdin</code> <code>--file</code> <code>--subject</code></td>
             <td>Message id and thread id in JSON.</td>
             <td>Use <code>handoff history --json</code> to find the thread.</td>
+          </tr>
+          <tr tabindex="0" data-command-row data-category="messaging" data-command="handoff notify hook json" data-use="Emit hook JSON that asks the receiving agent to process messages." data-recovery="Use handoff inbox --peek to inspect without marking read.">
+            <td><code>handoff notify --hook --json</code></td>
+            <td>Consume notifications and emit host-agent hook JSON for automatic delivery.</td>
+            <td><code>--project</code> <code>--runtime</code> <code>--session-id</code></td>
+            <td><code>decision: block</code> with message context when unread messages exist.</td>
+            <td>Use <code>handoff inbox --peek</code> to inspect without consuming.</td>
           </tr>
           <tr tabindex="0" data-command-row data-category="context" data-command="handoff context create --git-diff" data-use="Capture a diff as reusable context." data-recovery="Provide exactly one or more context sources.">
             <td><code>handoff context create --git-diff</code></td>
@@ -92,7 +106,7 @@ reference_search: true
             <td>Run <code>handoff status &lt;job-id&gt;</code>.</td>
           </tr>
           <tr tabindex="0" data-command-row data-category="jobs" data-command="handoff delegate wait stdin git-diff" data-use="Delegate work and optionally wait for the result." data-recovery="Use status and logs with the returned job id if waiting fails.">
-            <td><code>handoff delegate &lt;agent&gt; --task &lt;text&gt; --wait</code></td>
+            <td><code>handoff delegate &lt;profile&gt; --task &lt;text&gt; --wait</code></td>
             <td>Create context, queue the job, wait for completion, and print the result.</td>
             <td><code>--stdin</code> <code>--context</code> <code>--git-diff</code> <code>--file</code> <code>--timeout</code></td>
             <td>Result body by default, or JSON with <code>job_id</code> and <code>result</code>.</td>

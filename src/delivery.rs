@@ -58,7 +58,7 @@ pub(crate) fn print_monitor_instruction(
         shell_quote(session_id)
     );
     println!(
-        "handoff monitor mode: invoke the Monitor tool now with this persistent command:\n\n  command: {command}\n  description: handoff inbox stream\n  persistent: true\n\nThis streams incoming handoff messages into the session in near real time."
+        "handoff monitor mode: invoke the Monitor tool now with this persistent command before any other action in this session.\n\n  command: {command}\n  description: handoff inbox stream\n  persistent: true\n\nThis streams incoming handoff messages into the session in near real time. When output appears, treat it as an incoming handoff message and process it immediately."
     );
     Ok(())
 }
@@ -117,7 +117,7 @@ fn apply_markdown_turn_rule(path: &Path, project: &str, mode: &str) -> Result<()
     fs::write(
         path,
         format!(
-            "# handoff Integration Rule\n\nAfter each agent turn, check the handoff inbox.\n\n```sh\n{command}\n```\n"
+            "# handoff Integration Rule\n\nAfter each agent turn, check the handoff inbox. If the command reports messages, process them immediately and reply with `handoff reply <thread-id> <message>` when needed.\n\n```sh\n{command}\n```\n"
         ),
     )?;
     Ok(())
@@ -235,7 +235,7 @@ fn command_has_token(text: &str, token: &str) -> bool {
 fn inbox_hook_command(project: &str) -> Result<String> {
     let exe = env::current_exe()?;
     Ok(format!(
-        "'{}' notify --json --project '{}'",
+        "'{}' notify --hook --json --project '{}'",
         shell_quote(&exe.display().to_string()),
         shell_quote(project)
     ))

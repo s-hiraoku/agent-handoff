@@ -62,7 +62,7 @@ try {
     await client.callTool({
       name: "handoff_send",
       arguments: {
-        agent: "reviewer",
+        agent: "@reviewer",
         asAgent: "lead",
         message: "MCP smoke message",
         contextId: context.context_id,
@@ -87,6 +87,36 @@ try {
 
   if (inbox.messages.length !== 1 || inbox.messages[0].body !== "MCP smoke message") {
     throw new Error(`unexpected inbox result: ${JSON.stringify(inbox)}`);
+  }
+
+  const routed = parseToolJson(
+    await client.callTool({
+      name: "handoff_route",
+      arguments: {
+        capability: "review",
+        message: "MCP routed message",
+        project,
+      },
+    }),
+  );
+
+  if (!routed.message_id) {
+    throw new Error("handoff_route did not return message_id");
+  }
+
+  const routedInbox = parseToolJson(
+    await client.callTool({
+      name: "handoff_inbox",
+      arguments: {
+        sessionId: "reviewer-session",
+        peek: true,
+        project,
+      },
+    }),
+  );
+
+  if (routedInbox.messages.length !== 2 || routedInbox.messages[1].body !== "MCP routed message") {
+    throw new Error(`unexpected routed inbox result: ${JSON.stringify(routedInbox)}`);
   }
 
   const delegated = parseToolJson(

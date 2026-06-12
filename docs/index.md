@@ -108,15 +108,17 @@ description: Practical setup and daily workflow guide for agent-handoff.
             <pre class="command-block"><code>handoff init
 handoff session alias lead
 HANDOFF_SESSION_ID=reviewer-session handoff session alias reviewer
-handoff profile create reviewer --runtime shell</code></pre>
+handoff profile create reviewer --runtime shell
+handoff profile set reviewer session=@reviewer capability=review</code></pre>
           </div>
         </article>
         <article class="step-item">
           <span class="step-index">2</span>
           <div>
             <h3>Send work</h3>
-            <p>The sender is the current session, so send directly to a session alias.</p>
-            <pre class="command-block"><code>handoff to reviewer "Please review this change."</code></pre>
+            <p>The sender is the current session. Use <code>@alias</code> for live session inbox delivery.</p>
+            <pre class="command-block"><code>handoff to @reviewer "Please review this change."
+handoff route --capability review "Please review this change."</code></pre>
           </div>
         </article>
         <article class="step-item">
@@ -134,7 +136,7 @@ handoff inbox</code></pre>
     <aside class="side-stack" aria-label="Operational notes">
       <div class="note-panel">
         <strong>Current session</strong>
-        <p><code>handoff session alias &lt;alias&gt;</code> gives the current live session a readable address.</p>
+        <p><code>handoff session alias &lt;alias&gt;</code> gives the current live session a readable <code>@alias</code> address.</p>
       </div>
       <div class="note-panel">
         <strong>JSON mode</strong>
@@ -162,7 +164,7 @@ handoff inbox</code></pre>
             <h3>Package context</h3>
             <p>Capture diffs, files, stdin, text, or command output as a reusable context package.</p>
             <pre class="command-block"><code>CTX=$(handoff context create --git-diff --json | jq -r .context_id)
-handoff to reviewer --context "$CTX" --message "Use this diff."</code></pre>
+handoff to @reviewer --context "$CTX" --message "Use this diff."</code></pre>
           </div>
         </article>
         <article class="step-item">
@@ -201,7 +203,7 @@ handoff retry &lt;job-id&gt;</code></pre>
       </div>
       <div class="note-panel">
         <strong>Delivery modes</strong>
-        <p>Use <code>handoff mode turn --runtime codex</code> or <code>handoff mode both --runtime claude-code</code> for hooks.</p>
+        <p>Use <code>handoff mode turn --runtime codex</code> or <code>handoff mode both --runtime claude-code</code> for hooks. Turn hooks call <code>handoff notify --hook --json</code> so incoming messages are surfaced as actionable agent context.</p>
       </div>
     </aside>
   </div>
@@ -235,7 +237,7 @@ handoff retry &lt;job-id&gt;</code></pre>
       </div>
       <div class="note-panel">
         <strong>Troubleshooting</strong>
-        <p><code>unknown_session</code> means run <code>handoff sessions</code> or assign an alias with <code>handoff session alias &lt;alias&gt;</code>.</p>
+        <p><code>unknown_session</code> means run <code>handoff sessions</code> or assign an alias with <code>handoff session alias &lt;alias&gt;</code>. If a profile and session share a name, use <code>@alias</code> for inbox delivery.</p>
       </div>
     </aside>
   </div>

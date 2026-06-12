@@ -56,12 +56,13 @@ handoff init
 handoff session alias lead
 HANDOFF_SESSION_ID=reviewer-session handoff session alias reviewer
 handoff profile create reviewer --runtime shell
+handoff profile set reviewer session=@reviewer capability=review
 ```
 
 Send a message:
 
 ```sh
-handoff to reviewer "Please review the current diff."
+handoff to @reviewer "Please review the current diff."
 ```
 
 Read as the recipient:
@@ -79,17 +80,17 @@ handoff inbox --peek
 Send command output or a file:
 
 ```sh
-git diff | handoff to reviewer --stdin --subject "Current diff"
-handoff to reviewer --file notes.md
+git diff | handoff to @reviewer --stdin --subject "Current diff"
+handoff to @reviewer --file notes.md
 ```
 
 Create and send context:
 
 ```sh
 CTX=$(handoff context create --git-diff --json | jq -r .context_id)
-handoff to reviewer --context "$CTX" --message "Use this diff as context."
-handoff to reviewer --git-diff --message "Review this diff."
-handoff to reviewer --file notes.md --as-context --message "Use these notes."
+handoff to @reviewer --context "$CTX" --message "Use this diff as context."
+handoff to @reviewer --git-diff --message "Review this diff."
+handoff to @reviewer --file notes.md --as-context --message "Use these notes."
 handoff context show "$CTX"
 ```
 
@@ -137,23 +138,27 @@ handoff profile create <profile> --runtime shell
 handoff profile create <profile> --runtime codex --prompt-file reviewer.md
 handoff profile list
 handoff profile set <profile> model=...
+handoff profile set reviewer session=@reviewer capability=review
 handoff session alias <alias>
 handoff sessions
 handoff whoami
 handoff active
 ```
 
-The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable address.
+The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable `@alias` address. Profiles keep bare names for background execution; if a session and profile share a name, use `handoff to @alias` for inbox delivery and `handoff delegate <profile>` for worker execution.
 
 Messaging:
 
 ```sh
-handoff send <session|alias> <message>
-handoff to <session|alias> <message>
-handoff post <session|alias> <message>
+handoff send @<alias> <message>
+handoff to @<alias> <message>
+handoff to @<alias> --project /path/to/repo <message>
+handoff post @<alias> <message>
+handoff route --capability review <message>
 handoff reply <thread-id> <message>
 handoff inbox
 handoff notify
+handoff notify --hook --json
 handoff history
 handoff show <message-id>
 ```
@@ -200,7 +205,7 @@ handoff reset
 handoff install-alias agent-handoff
 ```
 
-`mode turn` writes a project-local notification hook for supported runtimes. `handoff daemon` writes `.handoff/notify/<session>.md` files for live sessions, and `handoff notify` consumes the current session notification file. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
+`mode turn` writes a project-local notification hook for supported runtimes. The hook calls `handoff notify --hook --json`, which emits a host-agent response that asks the receiving agent to process new messages immediately. `handoff daemon` writes `.handoff/notify/<session>.md` files for live sessions, and `handoff notify` consumes the current session notification file. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
 
 Project maintenance commands such as `reset` and `install-alias` are user-facing CLI commands. `reset` removes this project's registrations from local handoff state; `install-alias` creates a symlink alias for the current binary under `HANDOFF_HOME/bin`.
 
