@@ -33,7 +33,7 @@ pub(crate) fn apply_delivery_mode(project: &str, runtime: &str, mode: &str) -> R
         }
         "copilot" => {
             let path = Path::new(project).join(".github/hooks/handoff.json");
-            apply_json_turn_hook(&path, project, mode)
+            apply_copilot_hooks(&path, project, mode)
         }
         "gemini" | "antigravity" | "opencode" => {
             let path = Path::new(project).join(".agent/rules/handoff.md");
@@ -87,10 +87,36 @@ fn apply_json_turn_hook(path: &Path, project: &str, mode: &str) -> Result<()> {
     write_json_hooks(path, &value)
 }
 
+fn apply_copilot_hooks(path: &Path, project: &str, mode: &str) -> Result<()> {
+    let mut value = read_json_file(path)?;
+    remove_handoff_hooks(&mut value);
+    if mode != "off" {
+        let command = inbox_hook_command(project)?;
+        add_copilot_command_hook(&mut value, "Stop", &command);
+    }
+    write_copilot_hooks(path, &value)
+}
+
 fn write_json_hooks(path: &Path, value: &Value) -> Result<()> {
     let mut output = value.clone();
     remove_empty_hooks_object(&mut output);
     if value_has_no_content(&output) {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&output)? + "\n")?;
+    Ok(())
+}
+
+fn write_copilot_hooks(path: &Path, value: &Value) -> Result<()> {
+    let mut output = value.clone();
+    remove_empty_hooks_object(&mut output);
+    if copilot_hooks_file_has_no_content(&output) {
         if path.exists() {
             fs::remove_file(path)?;
         }
@@ -179,6 +205,47 @@ fn add_json_hook(value: &mut Value, event: &str, command: &str) {
                 }
             ]
         }));
+}
+
+fn add_copilot_command_hook(value: &mut Value, event: &str, command: &str) {
+    if !value.is_object() {
+        *value = json!({});
+    }
+    let object = value.as_object_mut().expect("object initialized");
+    object.entry("version").or_insert(json!(1));
+    let hooks = object
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !hooks.is_object() {
+        *hooks = Value::Object(Map::new());
+    }
+    let entries = hooks
+        .as_object_mut()
+        .expect("hooks object initialized")
+        .entry(event)
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !entries.is_array() {
+        *entries = Value::Array(Vec::new());
+    }
+    entries
+        .as_array_mut()
+        .expect("hook entries array initialized")
+        .push(json!({
+            "type": "command",
+            "command": command,
+            "timeoutSec": 30
+        }));
+}
+
+fn copilot_hooks_file_has_no_content(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return true;
+    };
+    object.is_empty()
+        || (object.len() == 1
+            && object
+                .get("version")
+                .is_some_and(|version| version.as_i64() == Some(1)))
 }
 
 fn value_has_no_hooks(value: &Value) -> bool {

@@ -3,10 +3,9 @@
 本ドキュメントは、現状の MVP(v0.2.0 時点)が「実用レベルで使えない」と感じられる根本原因を分析し、
 実用化に必要な機能仕様を優先度順に定義する。
 
-> 実装状況: v0.3.0 で P0-1/P0-2 を実装済み。この変更で P1-1 の
-> profile/session 分離、P1-2 の daemon/notify 配信、P2-1 の `handoff setup`
-> の実用スライスを実装した。旧 `join` / `actas` / `drop` / `rename-team` は
-> 公開 CLI から削除済み。
+> 実装状況: v0.3.0 で P0-1/P0-2 と P1/P2 の実用スライスを実装済み。
+> v0.4.0 では GitHub Copilot CLI 向けの組み込み adapter と delivery hook を追加した。
+> 旧 `join` / `actas` / `drop` / `rename-team` は公開 CLI から削除済み。
 
 ## 1. 現状分析:なぜ実用的に使えないか
 
@@ -84,6 +83,7 @@ handoff profile create fixer    --runtime codex
 
 - `claude-code` → `claude -p "$PROMPT" --output-format json` を spawn
 - `codex` → `codex exec "$PROMPT" --json`
+- `copilot` → `copilot -p "$PROMPT" --output-format=json --allow-all-tools`
 - タスク本文 + 添付 context + profile のシステムプロンプトを1つのプロンプトに合成して渡す
 - stdout の JSON から結果テキストを抽出して `handoff result` に格納
 - `--model` / `--allowed-tools` / `--cwd` 等のランタイムオプションは profile に永続化

@@ -1311,7 +1311,17 @@ fn cmd_daemon(conn: &Connection, args: DaemonArgs) -> Result<()> {
 fn cmd_notify(conn: &Connection, args: NotifyArgs) -> Result<()> {
     let project = project_path(args.project)?;
     let runtime = args.runtime.unwrap_or_else(detect_runtime);
-    let session_key = current_session_key(conn, &project, args.session_id)?;
+    let session_key = current_session_key(
+        conn,
+        &project,
+        args.session_id.or_else(|| {
+            if args.hook {
+                session_id_from_hook_stdin().ok().flatten()
+            } else {
+                None
+            }
+        }),
+    )?;
     let identity = current_session(conn, &project, Some(runtime.as_str()), Some(&session_key))?;
     let path = notify_path(&project, &session_key)?;
     if !path.exists() {
@@ -3456,6 +3466,7 @@ enum AdapterKind {
     Shell,
     BuiltInJson,
     CodexJson,
+    CopilotJson,
 }
 
 #[derive(Debug)]
@@ -3492,6 +3503,11 @@ fn adapter_command(runtime: &str, agent_name: &str, task: &str) -> Option<Adapte
             command: r#"codex exec "$HANDOFF_PROMPT" --json"#.to_string(),
             kind: AdapterKind::CodexJson,
         }),
+        "copilot" => Some(AdapterCommand {
+            command: r#"copilot -p "$HANDOFF_PROMPT" --output-format=json --allow-all-tools"#
+                .to_string(),
+            kind: AdapterKind::CopilotJson,
+        }),
         _ => None,
     }
 }
@@ -3513,7 +3529,7 @@ fn agent_prompt(system_prompt: Option<&str>, task: &str, context: &str) -> Strin
 fn adapter_result_body(adapter: &AdapterCommand, stdout: &str) -> String {
     if matches!(
         adapter.kind,
-        AdapterKind::BuiltInJson | AdapterKind::CodexJson
+        AdapterKind::BuiltInJson | AdapterKind::CodexJson | AdapterKind::CopilotJson
     ) {
         extract_json_result_text(stdout).unwrap_or_else(|| stdout.to_string())
     } else {
@@ -3860,6 +3876,7 @@ fn session_id_from_hook_stdin() -> Result<Option<String>> {
     let value: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
     Ok(value
         .get("session_id")
+        .or_else(|| value.get("sessionId"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned))
@@ -3870,6 +3887,8 @@ fn stable_session_id() -> Option<String> {
         "HANDOFF_SESSION_ID",
         "CLAUDE_CODE_SESSION_ID",
         "CODEX_SESSION_ID",
+        "COPILOT_SESSION_ID",
+        "GITHUB_COPILOT_SESSION_ID",
     ]
     .iter()
     .find_map(|key| env::var(key).ok().filter(|value| !value.trim().is_empty()))
@@ -3947,6 +3966,12 @@ pub(crate) fn shell_quote(value: &str) -> String {
 fn detect_runtime() -> Runtime {
     if env::var("CODEX_SANDBOX").is_ok() || env::var("CODEX_HOME").is_ok() {
         Runtime::Codex
+    } else if env::var("COPILOT_HOME").is_ok()
+        || env::var("COPILOT_GITHUB_TOKEN").is_ok()
+        || env::var("COPILOT_SESSION_ID").is_ok()
+        || env::var("GITHUB_COPILOT_SESSION_ID").is_ok()
+    {
+        Runtime::Copilot
     } else {
         Runtime::Shell
     }
@@ -4342,6 +4367,20 @@ mod tests {
     }
 
     #[test]
+    fn copilot_adapter_uses_programmatic_json_cli() {
+        if env::var("HANDOFF_RUNTIME_CMD_COPILOT").is_ok()
+            || env::var("HANDOFF_AGENT_CMD_REVIEWER").is_ok()
+        {
+            return;
+        }
+        let adapter = adapter_command("copilot", "reviewer", "review this").unwrap();
+        assert_eq!(adapter.kind, AdapterKind::CopilotJson);
+        assert!(adapter.command.contains("copilot -p"));
+        assert!(adapter.command.contains("--output-format=json"));
+        assert!(adapter.command.contains("--allow-all-tools"));
+    }
+
+    #[test]
     fn shell_delegate_requires_task() {
         let (_dir, conn) = test_conn();
         current_test_session(&conn, "lead");
@@ -4644,6 +4683,47 @@ mod tests {
             ModeArgs {
                 mode: Some(DeliveryMode::Off),
                 runtime: Some(Runtime::Codex),
+                project: Some(project),
+                json: false,
+            },
+        )
+        .unwrap();
+        assert!(!hook_path.exists());
+    }
+
+    #[test]
+    fn mode_turn_writes_copilot_hook_schema_and_off_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_path_buf();
+        let (_db_dir, conn) = test_conn();
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Turn),
+                runtime: Some(Runtime::Copilot),
+                project: Some(project.clone()),
+                json: false,
+            },
+        )
+        .unwrap();
+
+        let hook_path = project.join(".github/hooks/handoff.json");
+        let content = fs::read_to_string(&hook_path).unwrap();
+        let value: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(value["version"], 1);
+        let stop = value["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1);
+        assert_eq!(stop[0]["type"], "command");
+        assert!(stop[0]["command"].as_str().unwrap().contains("notify"));
+        assert!(stop[0]["command"].as_str().unwrap().contains("--hook"));
+        assert!(stop[0]["command"].as_str().unwrap().contains("--project"));
+        assert!(stop[0].get("hooks").is_none());
+
+        cmd_mode(
+            &conn,
+            ModeArgs {
+                mode: Some(DeliveryMode::Off),
+                runtime: Some(Runtime::Copilot),
                 project: Some(project),
                 json: false,
             },

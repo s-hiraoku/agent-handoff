@@ -37,7 +37,7 @@ wait_for_state() {
 }
 
 echo "== init/session/profile =="
-"$bin" --version | grep -Fx "handoff 0.3.0" >/dev/null
+"$bin" --version | grep -Fx "handoff 0.4.0" >/dev/null
 "$bin" init >/dev/null
 HANDOFF_SESSION_ID=lead-session "$bin" session alias lead >/dev/null
 HANDOFF_SESSION_ID=reviewer-session "$bin" session alias reviewer >/dev/null
@@ -85,6 +85,21 @@ grep "handoff" "$tmp/project/.codex/hooks.json" >/dev/null
 grep -- "--project" "$tmp/project/.codex/hooks.json" >/dev/null
 "$bin" mode off --runtime codex --project "$tmp/project" >/dev/null
 test ! -f "$tmp/project/.codex/hooks.json"
+"$bin" mode turn --runtime copilot --project "$tmp/copilot" >/dev/null
+test -f "$tmp/copilot/.github/hooks/handoff.json"
+python3 - "$tmp/copilot/.github/hooks/handoff.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+hook = data["hooks"]["Stop"][0]
+assert data["version"] == 1
+assert hook["type"] == "command"
+assert "notify" in hook["command"]
+assert "--hook" in hook["command"]
+assert "--project" in hook["command"]
+assert "hooks" not in hook
+PY
+"$bin" mode off --runtime copilot --project "$tmp/copilot" >/dev/null
+test ! -f "$tmp/copilot/.github/hooks/handoff.json"
 "$bin" mode monitor --runtime claude-code --project "$tmp/claude" >/dev/null
 test -f "$tmp/claude/.claude/settings.local.json"
 grep "SessionStart" "$tmp/claude/.claude/settings.local.json" >/dev/null
