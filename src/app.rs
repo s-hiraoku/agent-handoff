@@ -330,7 +330,7 @@ struct MonitorArgs {
     project: Option<PathBuf>,
     #[arg(long, value_enum, help = "Runtime to monitor")]
     runtime: Option<Runtime>,
-    #[arg(long, help = "Stable session id for role leases")]
+    #[arg(long, help = "Stable session id")]
     session_id: Option<String>,
     #[arg(long, default_value_t = 5, help = "Polling interval in seconds")]
     interval: u64,
@@ -449,7 +449,7 @@ struct LogsArgs {
     job_id: String,
     #[arg(long, help = "Maximum number of log lines")]
     tail: Option<i64>,
-    #[arg(long, help = "Accepted for compatibility; currently prints a snapshot")]
+    #[arg(long, help = "Follow new log lines until the job exits")]
     follow: bool,
     #[arg(long, help = "Print machine-readable JSON")]
     json: bool,

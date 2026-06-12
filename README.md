@@ -16,7 +16,7 @@ handoff
 
 ## Status
 
-MVP implementation. The storage format and CLI may still change before `v1.0`, but the current release is usable for local agent-to-agent messaging, context passing, and shell-backed background tasks.
+MVP implementation. The storage format and CLI may still change before `v1.0`, but the current release is usable for local agent-to-agent messaging, context passing, and profile-backed background tasks.
 
 ## Install
 
@@ -134,6 +134,7 @@ Profiles and sessions:
 ```sh
 handoff setup claude-code
 handoff profile create <profile> --runtime shell
+handoff profile create <profile> --runtime codex --prompt-file reviewer.md
 handoff profile list
 handoff profile set <profile> model=...
 handoff session alias <alias>
@@ -163,6 +164,7 @@ Context:
 handoff context create --text "notes"
 handoff context create --stdin
 handoff context create --file notes.md
+handoff context create --files notes.md --files plan.md
 handoff context create --git-diff
 handoff context create --cmd "cargo test"
 handoff context show <context-id>
@@ -194,13 +196,17 @@ handoff mode both --runtime claude-code
 handoff mode off
 handoff daemon
 handoff monitor --runtime shell
+handoff reset
+handoff install-alias agent-handoff
 ```
 
 `mode turn` writes a project-local notification hook for supported runtimes. `handoff daemon` writes `.handoff/notify/<session>.md` files for live sessions, and `handoff notify` consumes the current session notification file. `mode monitor` writes a Claude Code `SessionStart` hook that asks the host to launch a persistent `handoff monitor` stream. `mode both` installs both delivery paths. `mode off` removes handoff-owned hook entries.
 
+Project maintenance commands such as `reset` and `install-alias` are user-facing CLI commands. `reset` removes this project's registrations from local handoff state; `install-alias` creates a symlink alias for the current binary under `HANDOFF_HOME/bin`.
+
 ## JSON Output
 
-Read commands support `--json` for scripting and agent integration:
+Many commands support `--json` for scripting and agent integration. Common examples:
 
 ```sh
 handoff inbox --json
