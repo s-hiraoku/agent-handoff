@@ -110,9 +110,11 @@ Delegate and wait for a result in one command:
 
 ```sh
 git diff | handoff delegate reviewer --stdin --task "Review this diff" --wait
+handoff delegate reviewer --task "Review this diff" --wait --wait-timeout 120
 ```
 
 `handoff status <job-id>` prints a short human-readable summary by default. `handoff logs --follow` streams new adapter/stdout/stderr log lines until the job reaches a terminal state. Use `--json` when scripting.
+`handoff delegate --wait` waits up to the job timeout plus a small buffer, or 300 seconds when no job timeout is set. Use `--wait-timeout` to choose a different wait limit; the background job remains available through `handoff status`, `handoff logs`, and `handoff result`.
 
 For `shell` runtime, the task text is executed by the shell. `claude-code`, `codex`, and `copilot` have built-in adapters that call `claude -p "$HANDOFF_PROMPT" --output-format json`, `codex exec "$HANDOFF_PROMPT" --json`, and `copilot -p "$HANDOFF_PROMPT" --output-format=json --allow-all-tools`. For other runtimes, or to override any built-in adapter, set an adapter command:
 
@@ -149,6 +151,7 @@ handoff session alias <alias>
 handoff sessions
 handoff whoami
 handoff active
+handoff doctor
 ```
 
 The current sender is inferred from `HANDOFF_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`, `COPILOT_SESSION_ID`, `GITHUB_COPILOT_SESSION_ID`, or a project-local fallback session id. Use `handoff session alias <alias>` to give the current live session a readable `@alias` address. Profiles keep bare names for background execution; project profiles are resolved before user-global profiles, and `--global` creates, lists, or updates the reusable user-global scope. If a session and profile share a name, use `handoff to @alias` for inbox delivery and `handoff delegate <profile>` for worker execution.
@@ -189,6 +192,7 @@ handoff run <profile> --task <text>
 handoff run <profile> --task <text> --timeout 30
 handoff delegate <profile> --task <text> --wait
 handoff delegate <profile> --stdin --task <text> --wait
+handoff delegate <profile> --task <text> --wait --wait-timeout <seconds>
 handoff status [job-id]
 handoff logs <job-id>
 handoff logs <job-id> --follow

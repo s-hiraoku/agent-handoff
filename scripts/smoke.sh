@@ -44,6 +44,7 @@ HANDOFF_SESSION_ID=reviewer-session "$bin" session alias reviewer >/dev/null
 "$bin" profile create reviewer --runtime shell >/dev/null
 "$bin" profile set reviewer session=@reviewer capability=review >/dev/null
 HANDOFF_SESSION_ID=lead-session "$bin" sessions | grep "@reviewer" >/dev/null
+HANDOFF_SESSION_ID=lead-session "$bin" doctor --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert "issues" in data; assert data["project"]'
 
 echo "== send/inbox/history =="
 HANDOFF_SESSION_ID=lead-session "$bin" to @reviewer "Please review" --subject "Review request" >/dev/null
@@ -122,7 +123,7 @@ echo "== delegate =="
 # shellcheck disable=SC2016
 HANDOFF_SESSION_ID=lead-session "$bin" delegate reviewer --task 'printf "delegated: %s\n" "$HANDOFF_TASK"' --wait | grep "delegated:" >/dev/null
 # shellcheck disable=SC2016
-printf 'stdin delegate context\n' | HANDOFF_SESSION_ID=lead-session "$bin" delegate reviewer --task 'printf "%s\n" "$HANDOFF_CONTEXT"' --stdin --wait | grep "stdin delegate context" >/dev/null
+printf 'stdin delegate context\n' | HANDOFF_SESSION_ID=lead-session "$bin" delegate reviewer --task 'printf "%s\n" "$HANDOFF_CONTEXT"' --stdin --wait --wait-timeout 10 | grep "stdin delegate context" >/dev/null
 
 echo "== retry =="
 retry_id="$("$bin" retry "$job_id" --json | json_get '["job_id"]')"

@@ -78,6 +78,7 @@ handoff delegate <profile> --task "task text" --context <context-id> --wait
 handoff delegate <profile> --stdin --task "review this context" --wait
 handoff run <profile> --task "task text" --context <context-id>
 handoff run <profile> --task "task text" --timeout 30
+handoff doctor
 handoff status <job-id>
 handoff logs <job-id>
 handoff result <job-id>
@@ -110,4 +111,5 @@ handoff profile list --global
 handoff history
 handoff context list
 handoff status
+handoff doctor
 ```

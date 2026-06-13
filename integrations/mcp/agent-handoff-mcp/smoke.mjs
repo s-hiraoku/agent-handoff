@@ -122,6 +122,19 @@ try {
     throw new Error(`unexpected routed inbox result: ${JSON.stringify(routedInbox)}`);
   }
 
+  const doctor = parseToolJson(
+    await client.callTool({
+      name: "handoff_doctor",
+      arguments: {
+        project,
+      },
+    }),
+  );
+
+  if (!doctor.project || !Array.isArray(doctor.issues)) {
+    throw new Error(`unexpected doctor result: ${JSON.stringify(doctor)}`);
+  }
+
   const delegated = parseToolJson(
     await client.callTool({
       name: "handoff_delegate",
@@ -131,6 +144,7 @@ try {
         task: 'printf "mcp delegated: %s\\n" "$HANDOFF_TASK"',
         wait: true,
         timeout: 5,
+        waitTimeout: 10,
         project,
       },
     }),

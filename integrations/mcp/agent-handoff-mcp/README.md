@@ -63,6 +63,7 @@ Tool results preserve the CLI JSON text for compatibility and also expose the pa
 - `handoff_result`
 - `handoff_cancel`
 - `handoff_retry`
+- `handoff_doctor`
 
 ## Trust Boundary
 

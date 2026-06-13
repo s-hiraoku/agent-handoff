@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -16,6 +17,8 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const DEFAULT_LIMIT: i64 = 50;
+const DEFAULT_DELEGATE_WAIT_TIMEOUT_SECONDS: u64 = 300;
+const DELEGATE_WAIT_BUFFER_SECONDS: u64 = 5;
 const SCHEMA_VERSION: i64 = 2;
 const TERMINAL_JOB_STATE_SQL: &str = "'succeeded','failed','cancelled','timeout','blocked'";
 const USER_GLOBAL_TEAM_NAME: &str = "user:global";
@@ -45,6 +48,8 @@ enum Commands {
     Whoami(ProjectArgs),
     #[command(about = "Show the current session")]
     Active(ProjectArgs),
+    #[command(about = "Diagnose handoff setup for this project")]
+    Doctor(ProjectArgs),
     #[command(about = "Send a message to another live session")]
     Send(SendArgs),
     #[command(about = "Send a message to another live session")]
@@ -460,6 +465,8 @@ struct DelegateArgs {
     file: Option<PathBuf>,
     #[arg(long, help = "Timeout in seconds for the delegated job")]
     timeout: Option<u64>,
+    #[arg(long, help = "Maximum seconds to wait with --wait")]
+    wait_timeout: Option<u64>,
     #[arg(long, help = "Wait for the job to finish and print the result")]
     wait: bool,
     #[arg(long = "as", hide = true)]
@@ -614,6 +621,7 @@ fn run() -> Result<()> {
         Commands::Session(args) => cmd_session(&conn, args),
         Commands::Whoami(args) => cmd_whoami(&conn, args),
         Commands::Active(args) => cmd_active(&conn, args),
+        Commands::Doctor(args) => cmd_doctor(&conn, args),
         Commands::Send(args) | Commands::To(args) | Commands::Post(args) => {
             cmd_send(&conn, args, "message")
         }
@@ -839,7 +847,65 @@ fn ensure_schema(conn: &Connection) -> Result<()> {
         create index if not exists idx_job_logs_job on job_logs(job_id, created_at);
         "#,
     )?;
+    migrate_schema(conn, version)?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+fn migrate_schema(conn: &Connection, from_version: i64) -> Result<()> {
+    migrate_missing_columns(conn)?;
+    if from_version < 2 {
+        migrate_v1_agents_to_profiles(conn)?;
+    }
+    Ok(())
+}
+
+fn migrate_missing_columns(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "profile_settings", "prompt", "prompt text")?;
+    add_column_if_missing(conn, "profile_settings", "prompt_file", "prompt_file text")?;
+    add_column_if_missing(
+        conn,
+        "profile_settings",
+        "options_json",
+        "options_json text not null default '{}'",
+    )?;
+    add_column_if_missing(conn, "role_locks", "session_id", "session_id text")?;
+    add_column_if_missing(conn, "role_locks", "process_id", "process_id integer")?;
+    add_column_if_missing(conn, "jobs", "retry_of_job_id", "retry_of_job_id text")?;
+    add_column_if_missing(conn, "jobs", "timeout_seconds", "timeout_seconds integer")?;
+    add_column_if_missing(conn, "jobs", "process_id", "process_id integer")?;
+    add_column_if_missing(conn, "jobs", "failure_code", "failure_code text")?;
+    add_column_if_missing(conn, "jobs", "failure_message", "failure_message text")?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<()> {
+    if !table_columns(conn, table)?.contains(column) {
+        conn.execute(&format!("alter table {table} add column {definition}"), [])?;
+    }
+    Ok(())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    Ok(rows.collect::<std::result::Result<HashSet<_>, _>>()?)
+}
+
+fn migrate_v1_agents_to_profiles(conn: &Connection) -> Result<()> {
+    let now = now();
+    conn.execute(
+        "insert or ignore into profile_settings (agent_id, prompt, prompt_file, options_json, created_at, updated_at)
+         select distinct a.id, null, null, '{}', ?1, ?1
+         from agents a
+         join project_registrations pr on pr.agent_id=a.id and pr.team_id=a.team_id",
+        params![now],
+    )?;
     Ok(())
 }
 
@@ -1085,6 +1151,250 @@ fn cmd_active(conn: &Connection, args: ProjectArgs) -> Result<()> {
     Ok(())
 }
 
+fn cmd_doctor(conn: &Connection, args: ProjectArgs) -> Result<()> {
+    let report = doctor_report(conn, args.project)?;
+    if args.json {
+        print_json(report);
+    } else {
+        print_doctor_report(&report);
+    }
+    Ok(())
+}
+
+fn doctor_report(conn: &Connection, project_arg: Option<PathBuf>) -> Result<Value> {
+    let project = project_path(project_arg)?;
+    let session = current_session(conn, &project, None, None)?;
+    let sessions = list_sessions(conn, &project)?;
+    let profiles = list_profiles(conn, &project)?;
+    let delivery = delivery_statuses(conn, &project)?;
+    let mcp = mcp_status(&project)?;
+    let hooks = hook_statuses(&project);
+    let profile_diagnostics = profiles
+        .iter()
+        .map(|profile| {
+            let name = profile["name"].as_str().unwrap_or_default();
+            let runtime = profile["runtime"].as_str().unwrap_or_default();
+            json!({
+                "name": name,
+                "runtime": runtime,
+                "scope": profile["scope"],
+                "adapter": adapter_diagnostic(runtime, name),
+            })
+        })
+        .collect::<Vec<_>>();
+    let issues = doctor_issues(&session, &profiles, &delivery, &mcp, &profile_diagnostics);
+    Ok(json!({
+        "ok": !issues.iter().any(|issue| issue["severity"].as_str() == Some("error")),
+        "project": project,
+        "home": app_home()?.display().to_string(),
+        "database": db_path()?.display().to_string(),
+        "session": identity_json(&session),
+        "sessions": sessions,
+        "profiles": profile_diagnostics,
+        "delivery": delivery,
+        "mcp": mcp,
+        "hooks": hooks,
+        "issues": issues,
+    }))
+}
+
+fn delivery_statuses(conn: &Connection, project: &str) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "select runtime, mode, updated_at from delivery_settings where project_path=?1 order by runtime",
+    )?;
+    let rows = stmt.query_map(params![project], |row| {
+        Ok(json!({
+            "runtime": row.get::<_, String>(0)?,
+            "mode": row.get::<_, String>(1)?,
+            "updated_at": row.get::<_, String>(2)?,
+        }))
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+fn mcp_status(project: &str) -> Result<Value> {
+    let path = Path::new(project).join(".mcp.json");
+    if !path.exists() {
+        return Ok(json!({"path": path.display().to_string(), "configured": false}));
+    }
+    let content = fs::read_to_string(&path)?;
+    let value = serde_json::from_str::<Value>(&content).unwrap_or(Value::Null);
+    let configured = value
+        .get("mcpServers")
+        .and_then(|servers| servers.get("agent-handoff"))
+        .is_some();
+    Ok(json!({
+        "path": path.display().to_string(),
+        "configured": configured,
+        "parseable": !value.is_null(),
+    }))
+}
+
+fn hook_statuses(project: &str) -> Vec<Value> {
+    [
+        ("claude-code", ".claude/settings.local.json"),
+        ("codex", ".codex/hooks.json"),
+        ("copilot", ".github/hooks/handoff.json"),
+        ("agent-rule", ".agent/rules/handoff.md"),
+    ]
+    .iter()
+    .map(|(runtime, relative)| {
+        let path = Path::new(project).join(relative);
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        json!({
+            "runtime": runtime,
+            "path": path.display().to_string(),
+            "exists": path.exists(),
+            "contains_handoff": content.contains("handoff"),
+        })
+    })
+    .collect()
+}
+
+fn adapter_diagnostic(runtime: &str, agent_name: &str) -> Value {
+    let agent_key = format!("HANDOFF_AGENT_CMD_{}", env_key(agent_name));
+    if env::var(&agent_key).is_ok() {
+        return json!({"status": "configured", "source": agent_key});
+    }
+    let runtime_key = format!("HANDOFF_RUNTIME_CMD_{}", env_key(runtime));
+    if env::var(&runtime_key).is_ok() {
+        return json!({"status": "configured", "source": runtime_key});
+    }
+    match runtime {
+        "shell" => json!({"status": "available", "source": "shell-task"}),
+        "claude-code" => binary_diagnostic("claude"),
+        "codex" => binary_diagnostic("codex"),
+        "copilot" => binary_diagnostic("copilot"),
+        _ => {
+            json!({"status": "missing", "source": format!("HANDOFF_RUNTIME_CMD_{}", env_key(runtime))})
+        }
+    }
+}
+
+fn binary_diagnostic(binary: &str) -> Value {
+    if command_exists(binary) {
+        json!({"status": "available", "source": binary})
+    } else {
+        json!({"status": "missing", "source": binary})
+    }
+}
+
+fn command_exists(binary: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&path).any(|dir| dir.join(binary).is_file())
+}
+
+fn doctor_issues(
+    session: &Identity,
+    profiles: &[Value],
+    delivery: &[Value],
+    mcp: &Value,
+    profile_diagnostics: &[Value],
+) -> Vec<Value> {
+    let mut issues = Vec::new();
+    if session.agent.starts_with("session-") {
+        issues.push(json!({
+            "severity": "warning",
+            "code": "session_alias_missing",
+            "message": "Current session has no readable alias. Run `handoff session alias <alias>` if this session should receive messages."
+        }));
+    }
+    if profiles.is_empty() {
+        issues.push(json!({
+            "severity": "warning",
+            "code": "no_profiles",
+            "message": "No delegation profiles are configured. Run `handoff profile create <profile> --runtime <runtime>` before using delegate/run."
+        }));
+    }
+    if delivery.is_empty() {
+        issues.push(json!({
+            "severity": "warning",
+            "code": "delivery_off",
+            "message": "No delivery mode is configured for this project. Run `handoff mode turn --runtime <runtime>` or `handoff setup <runtime>` if live notifications are needed."
+        }));
+    }
+    if !mcp["configured"].as_bool().unwrap_or(false) {
+        issues.push(json!({
+            "severity": "warning",
+            "code": "mcp_not_configured",
+            "message": "No agent-handoff MCP server is configured in .mcp.json."
+        }));
+    }
+    for profile in profile_diagnostics {
+        if profile["adapter"]["status"].as_str() == Some("missing") {
+            issues.push(json!({
+                "severity": "error",
+                "code": "adapter_missing",
+                "message": format!(
+                    "Profile '{}' uses runtime '{}' but no adapter command or binary was found.",
+                    profile["name"].as_str().unwrap_or_default(),
+                    profile["runtime"].as_str().unwrap_or_default()
+                )
+            }));
+        }
+    }
+    issues
+}
+
+fn print_doctor_report(report: &Value) {
+    println!(
+        "handoff doctor: {}",
+        if report["ok"].as_bool().unwrap_or(false) {
+            "ok"
+        } else {
+            "issues found"
+        }
+    );
+    println!(
+        "project: {}",
+        report["project"].as_str().unwrap_or_default()
+    );
+    println!("home: {}", report["home"].as_str().unwrap_or_default());
+    println!(
+        "session: {} ({})",
+        report["session"]["agent"].as_str().unwrap_or_default(),
+        report["session"]["runtime"].as_str().unwrap_or_default()
+    );
+    println!(
+        "profiles: {}",
+        report["profiles"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+    );
+    println!(
+        "delivery modes: {}",
+        report["delivery"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+    );
+    println!(
+        "mcp: {}",
+        if report["mcp"]["configured"].as_bool().unwrap_or(false) {
+            "configured"
+        } else {
+            "missing"
+        }
+    );
+    let issues = report["issues"].as_array().cloned().unwrap_or_default();
+    if issues.is_empty() {
+        println!("No issues found.");
+    } else {
+        println!("Issues:");
+        for issue in issues {
+            println!(
+                "- [{}] {}: {}",
+                issue["severity"].as_str().unwrap_or("info"),
+                issue["code"].as_str().unwrap_or("unknown"),
+                issue["message"].as_str().unwrap_or_default()
+            );
+        }
+    }
+}
+
 fn cmd_send(conn: &Connection, args: SendArgs, default_kind: &str) -> Result<()> {
     let project = project_path(args.project.clone())?;
     let sender = sender_session(conn, &project, args.as_agent.as_deref())?;
@@ -1221,7 +1531,14 @@ fn cmd_reply(conn: &Connection, args: ReplyArgs) -> Result<()> {
 
 fn cmd_inbox(conn: &Connection, args: InboxArgs) -> Result<()> {
     let project = project_path(args.project)?;
-    let identity = current_session(conn, &project, None, args.session_id.as_deref())?;
+    if args.as_agent.is_some() && args.session_id.is_some() {
+        bail!("invalid_arguments: use either --as or --session-id, not both");
+    }
+    let identity = if let Some(agent) = args.as_agent.as_deref() {
+        session_identity_by_name(conn, &project, agent)?
+    } else {
+        current_session(conn, &project, None, args.session_id.as_deref())?
+    };
     let unread_only = !args.all;
     let messages = inbox_messages(conn, &identity.agent_id, unread_only, args.limit)?;
     let mark_read = !(args.peek || args.no_mark_read);
@@ -1625,7 +1942,7 @@ fn cmd_delegate(conn: &Connection, args: DelegateArgs) -> Result<()> {
     )?;
     spawn_worker(&job_id)?;
     if args.wait {
-        let result = wait_for_job_result(conn, &job_id)?;
+        let result = wait_for_job_result(conn, &job_id, delegate_wait_timeout(&args)?)?;
         if args.json {
             print_json(json!({"ok": true, "job_id": job_id, "result": result}));
         } else {
@@ -1637,6 +1954,20 @@ fn cmd_delegate(conn: &Connection, args: DelegateArgs) -> Result<()> {
         println!("job {job_id}");
     }
     Ok(())
+}
+
+fn delegate_wait_timeout(args: &DelegateArgs) -> Result<Duration> {
+    let seconds = if let Some(wait_timeout) = args.wait_timeout {
+        wait_timeout
+    } else if let Some(timeout) = args.timeout {
+        timeout.saturating_add(DELEGATE_WAIT_BUFFER_SECONDS)
+    } else {
+        DEFAULT_DELEGATE_WAIT_TIMEOUT_SECONDS
+    };
+    if seconds == 0 {
+        bail!("invalid_arguments: --wait-timeout must be greater than zero");
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 struct RunJobSpec<'a> {
@@ -1728,7 +2059,12 @@ fn create_run_job(
     Ok(job_id)
 }
 
-fn wait_for_job_result(conn: &Connection, job_id: &str) -> Result<serde_json::Value> {
+fn wait_for_job_result(
+    conn: &Connection,
+    job_id: &str,
+    max_wait: Duration,
+) -> Result<serde_json::Value> {
+    let started = Instant::now();
     loop {
         let job = job_json(conn, job_id)?.ok_or_else(|| anyhow!("unknown job: {job_id}"))?;
         let state = job["state"].as_str().unwrap_or_default();
@@ -1745,6 +2081,12 @@ fn wait_for_job_result(conn: &Connection, job_id: &str) -> Result<serde_json::Va
                 .or_else(|| job["failure_code"].as_str())
                 .unwrap_or("job finished without a result");
             bail!("delegate_failed: {state}: {failure}");
+        }
+        if started.elapsed() >= max_wait {
+            bail!(
+                "delegate_wait_timeout: job {job_id} is still {state} after {}s\nRun: handoff status {job_id} && handoff logs {job_id}",
+                max_wait.as_secs()
+            );
         }
         thread::sleep(Duration::from_millis(200));
     }
@@ -1974,7 +2316,7 @@ fn install_handoff_skill(project: &str) -> Result<()> {
 }
 
 fn default_skill_content() -> &'static str {
-    "# handoff\n\nUse `handoff delegate <profile> --task \"...\" --wait` for synchronous sub-agent work.\nUse `handoff to @<alias> \"...\"` for live session coordination.\nUse `handoff route --capability <capability> \"...\"` after linking profiles with `handoff profile set <profile> session=@alias capability=...`.\nRun `handoff notify` after turns when notification hooks are unavailable.\n"
+    "# handoff\n\nUse `handoff delegate <profile> --task \"...\" --wait` for synchronous sub-agent work.\nUse `handoff to @<alias> \"...\"` for live session coordination.\nUse `handoff route --capability <capability> \"...\"` after linking profiles with `handoff profile set <profile> session=@alias capability=...`.\nRun `handoff doctor` to diagnose setup, delivery, MCP, and adapter issues.\nRun `handoff notify` after turns when notification hooks are unavailable.\n"
 }
 
 fn worker_run(conn: &Connection, job_id: &str) -> Result<()> {
@@ -4477,6 +4819,80 @@ mod tests {
     }
 
     #[test]
+    fn schema_migration_preserves_v1_registered_agents_as_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("handoff.db")).unwrap();
+        conn.execute_batch(
+            r#"
+            pragma user_version = 1;
+            create table teams (
+              id text primary key,
+              name text not null unique,
+              created_at text not null,
+              updated_at text not null
+            );
+            create table agents (
+              id text primary key,
+              team_id text not null references teams(id) on delete cascade,
+              name text not null,
+              runtime text not null,
+              created_at text not null,
+              updated_at text not null,
+              unique(team_id, name)
+            );
+            create table project_registrations (
+              id text primary key,
+              team_id text not null references teams(id) on delete cascade,
+              agent_id text not null references agents(id) on delete cascade,
+              project_path text not null,
+              runtime text not null,
+              created_at text not null,
+              updated_at text not null,
+              unique(team_id, agent_id, project_path, runtime)
+            );
+            "#,
+        )
+        .unwrap();
+        let project = test_project();
+        let basename = Path::new(&project)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project");
+        let team_id = id();
+        let agent_id = id();
+        let now = now();
+        conn.execute(
+            "insert into teams (id, name, created_at, updated_at) values (?1, ?2, ?3, ?3)",
+            params![
+                team_id,
+                format!("project:{basename}:{}", &content_hash(&project)[..12]),
+                now
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into agents (id, team_id, name, runtime, created_at, updated_at) values (?1, ?2, 'reviewer', 'shell', ?3, ?3)",
+            params![agent_id, team_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "insert into project_registrations (id, team_id, agent_id, project_path, runtime, created_at, updated_at) values (?1, ?2, ?3, ?4, 'shell', ?5, ?5)",
+            params![id(), team_id, agent_id, project, now],
+        )
+        .unwrap();
+
+        ensure_schema(&conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("pragma user_version", [], |row| row.get(0))
+            .unwrap();
+        let migrated = profile_by_name(&conn, &project, "reviewer").unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(migrated.agent_id, agent_id);
+        assert_eq!(migrated.runtime, "shell");
+    }
+
+    #[test]
     fn retry_preserves_global_profile_target_when_project_profile_shadows_name() {
         let (_dir, conn) = test_conn();
         let sender = current_test_session(&conn, "alice");
@@ -4658,6 +5074,7 @@ mod tests {
                 stdin: false,
                 file: None,
                 timeout: None,
+                wait_timeout: None,
                 wait: false,
                 as_agent: Some("lead".into()),
                 subject: None,
@@ -4916,6 +5333,110 @@ mod tests {
             inbox_messages(&conn, &bob.agent_id, true, 10)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn inbox_as_agent_reads_named_session() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "alice");
+        let bob = named_test_session(&conn, "bob-as-session", "bob");
+        cmd_send(
+            &conn,
+            SendArgs {
+                session: "bob".into(),
+                project: None,
+                message: vec!["read via as".into()],
+                as_agent: Some("alice".into()),
+                team: None,
+                stdin: false,
+                file: None,
+                as_context: false,
+                git_diff: false,
+                cmd: None,
+                subject: None,
+                thread: None,
+                context: None,
+                message_text: None,
+                json: false,
+            },
+            "message",
+        )
+        .unwrap();
+        cmd_inbox(
+            &conn,
+            InboxArgs {
+                as_agent: Some("bob".into()),
+                project: None,
+                session_id: None,
+                unread: true,
+                all: false,
+                peek: false,
+                no_mark_read: false,
+                limit: 10,
+                json: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            inbox_messages(&conn, &bob.agent_id, true, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn delegate_wait_timeout_reports_still_running_job() {
+        let (_dir, conn) = test_conn();
+        let sender = current_test_session(&conn, "lead");
+        test_profile(&conn, "reviewer");
+        let target = profile_by_name(&conn, &test_project(), "reviewer").unwrap();
+        let job_id = create_run_job(
+            &conn,
+            &sender,
+            &target,
+            RunJobSpec {
+                task: "pending",
+                context_id: None,
+                context_inputs: None,
+                subject: None,
+                timeout: None,
+                retry_of_job_id: None,
+            },
+        )
+        .unwrap();
+
+        let err = wait_for_job_result(&conn, &job_id, Duration::from_millis(1)).unwrap_err();
+
+        assert!(err.to_string().contains("delegate_wait_timeout"));
+        assert!(err.to_string().contains("handoff status"));
+    }
+
+    #[test]
+    fn doctor_reports_missing_adapter_for_unsupported_profile() {
+        let (_dir, conn) = test_conn();
+        current_test_session(&conn, "lead");
+        cmd_profile_create(
+            &conn,
+            ProfileCreateArgs {
+                name: "missing-adapter-test".into(),
+                runtime: Some(Runtime::Unknown),
+                prompt: None,
+                prompt_file: None,
+                global: false,
+                project: None,
+                json: false,
+            },
+        )
+        .unwrap();
+
+        let report = doctor_report(&conn, None).unwrap();
+        let issues = report["issues"].as_array().unwrap();
+
+        assert!(
+            issues.iter().any(|issue| {
+                issue["code"] == "adapter_missing" && issue["severity"] == "error"
+            })
         );
     }
 
