@@ -8,6 +8,7 @@ import path from "node:path";
 
 const HANDOFF_BIN = process.env.HANDOFF_BIN || "handoff";
 const DEFAULT_HANDOFF_TIMEOUT_MS = 30000;
+const DEFAULT_DELEGATE_WAIT_TIMEOUT_SECONDS = 300;
 const DELEGATE_WAIT_BUFFER_MS = 5000;
 const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
@@ -242,9 +243,10 @@ server.tool(
     asAgent: z.string().optional(),
     subject: z.string().optional(),
     timeout: z.number().int().positive().optional(),
+    waitTimeout: z.number().int().positive().optional(),
     project: z.string().optional()
   },
-  async ({ agent, task, stdin, gitDiff, file, contextId, wait, asAgent, subject, timeout, project }) => {
+  async ({ agent, task, stdin, gitDiff, file, contextId, wait, asAgent, subject, timeout, waitTimeout, project }) => {
     const args = ["delegate", agent, "--json"];
     if (task) args.push("--task", task);
     if (stdin) args.push("--stdin");
@@ -255,7 +257,9 @@ server.tool(
     if (asAgent) args.push("--as", asAgent);
     if (subject) args.push("--subject", subject);
     if (timeout) args.push("--timeout", String(timeout));
-    const timeoutMs = wait && timeout ? (timeout * 1000) + DELEGATE_WAIT_BUFFER_MS : undefined;
+    if (waitTimeout) args.push("--wait-timeout", String(waitTimeout));
+    const waitSeconds = waitTimeout || (timeout ? timeout + 5 : DEFAULT_DELEGATE_WAIT_TIMEOUT_SECONDS);
+    const timeoutMs = wait ? (waitSeconds * 1000) + DELEGATE_WAIT_BUFFER_MS : undefined;
     return textResult(await runHandoff(args, stdin, project, { timeoutMs }));
   }
 );
@@ -271,6 +275,17 @@ server.tool(
     const args = ["status", "--json"];
     if (jobId) args.splice(1, 0, jobId);
     return textResult(await runHandoff(args, undefined, project));
+  }
+);
+
+server.tool(
+  "handoff_doctor",
+  "Diagnose handoff setup for the configured project.",
+  {
+    project: z.string().optional()
+  },
+  async ({ project }) => {
+    return textResult(await runHandoff(["doctor", "--json"], undefined, project));
   }
 );
 
